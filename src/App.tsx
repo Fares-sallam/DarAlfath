@@ -1,0 +1,183 @@
+import { Toaster } from "@/components/ui/toaster";
+import { Toaster as Sonner } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+
+import { AuthProvider } from "@/contexts/AuthContext";
+import { LogoProvider } from "@/contexts/LogoContext";
+import ProtectedRoute from "@/components/auth/ProtectedRoute";
+
+import Login from "./pages/Login";
+import Index from "./pages/Index";
+import NotFound from "./pages/NotFound";
+import Books from "./pages/Books";
+import Orders from "./pages/Orders";
+import Customers from "./pages/Customers";
+import Coupons from "./pages/Coupons";
+import Series from "./pages/Series";
+import Inventory from "./pages/Inventory";
+import Analytics from "./pages/Analytics";
+import Shipping from "./pages/Shipping";
+import AdminSettings from "./pages/AdminSettings";
+import ActivityLog from "./pages/ActivityLog";
+import Settings from "./pages/Settings";
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: 1,
+      retryDelay: 1000,
+      staleTime: 60_000,
+      gcTime: 5 * 60_000,
+      refetchOnWindowFocus: false,
+      refetchOnMount: true,
+      networkMode: "online",
+    },
+    mutations: {
+      retry: 0,
+      networkMode: "online",
+    },
+  },
+});
+
+const App = () => {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Toaster />
+        <Sonner position="top-center" />
+        <AuthProvider>
+          <LogoProvider>
+            <BrowserRouter>
+              <Routes>
+                {/* Public */}
+                <Route path="/login" element={<Login />} />
+
+                {/* Dashboard */}
+                <Route
+                  path="/"
+                  element={
+                    <ProtectedRoute>
+                      <Index />
+                    </ProtectedRoute>
+                  }
+                />
+
+                {/* Products / Content */}
+                <Route
+                  path="/books"
+                  element={
+                    <ProtectedRoute permission="can_manage_products">
+                      <Books />
+                    </ProtectedRoute>
+                  }
+                />
+
+                <Route
+                  path="/series"
+                  element={
+                    <ProtectedRoute permission="can_manage_products">
+                      <Series />
+                    </ProtectedRoute>
+                  }
+                />
+
+                {/* Orders / Sales */}
+                <Route
+                  path="/orders"
+                  element={
+                    <ProtectedRoute permission="can_manage_orders">
+                      <Orders />
+                    </ProtectedRoute>
+                  }
+                />
+
+                <Route
+                  path="/coupons"
+                  element={
+                    <ProtectedRoute permission="can_manage_coupons">
+                      <Coupons />
+                    </ProtectedRoute>
+                  }
+                />
+
+                {/* Users / Admins */}
+                <Route
+                  path="/customers"
+                  element={
+                    <ProtectedRoute permission="can_manage_users">
+                      <Customers />
+                    </ProtectedRoute>
+                  }
+                />
+
+                <Route
+                  path="/admins"
+                  element={
+                    <ProtectedRoute permission="can_manage_users">
+                      <AdminSettings />
+                    </ProtectedRoute>
+                  }
+                />
+
+                {/* Inventory / Shipping */}
+                <Route
+                  path="/inventory"
+                  element={
+                    <ProtectedRoute permission="can_manage_inventory">
+                      <Inventory />
+                    </ProtectedRoute>
+                  }
+                />
+
+                <Route
+                  path="/shipping"
+                  element={
+                    <ProtectedRoute permission="can_manage_shipping">
+                      <Shipping />
+                    </ProtectedRoute>
+                  }
+                />
+
+                {/* Reports */}
+                <Route
+                  path="/analytics"
+                  element={
+                    <ProtectedRoute permission="can_view_analytics">
+                      <Analytics />
+                    </ProtectedRoute>
+                  }
+                />
+
+                <Route
+                  path="/activity"
+                  element={
+                    <ProtectedRoute permission="can_view_activity_log">
+                      <ActivityLog />
+                    </ProtectedRoute>
+                  }
+                />
+
+                {/* Settings */}
+                <Route
+                  path="/settings"
+                  element={
+                    <ProtectedRoute permission="can_manage_users">
+                      <Settings />
+                    </ProtectedRoute>
+                  }
+                />
+
+                {/* Catch-all */}
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </BrowserRouter>
+          </LogoProvider>
+        </AuthProvider>
+      </TooltipProvider>
+    </QueryClientProvider>
+  );
+};
+
+export default App;

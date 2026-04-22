@@ -1,0 +1,182 @@
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { supabase } from '@/lib/supabase';
+import { toast } from 'sonner';
+
+/* ── Types ── */
+export type CouponType = 'نسبة' | 'مبلغ ثابت' | 'شحن مجاني' | 'خصم منتج';
+
+export interface Coupon {
+  id: string;
+  code: string;
+  type: CouponType;
+  value: number;
+  min_order: number;
+  max_uses?: number;
+  used_count: number;
+  product_id?: string;
+  country_id?: string;
+  user_id?: string;
+  valid_from: string;
+  valid_to?: string;
+  is_active: boolean;
+  created_at: string;
+  // Joined
+  products?: { title: string } | null;
+  countries?: { name: string } | null;
+  profiles?: { full_name: string } | null;
+}
+
+/** Derived status computed client-side */
+export function getCouponStatus(c: Coupon): 'نشط' | 'منتهي' | 'معطل' | 'لم يبدأ' {
+  if (!c.is_active) return 'معطل';
+  const now = new Date();
+  const from = new Date(c.valid_from);
+  if (now < from) return 'لم يبدأ';
+  if (c.valid_to) {
+    const to = new Date(c.valid_to);
+    if (now > to) return 'منتهي';
+  }
+  if (c.max_uses !== undefined && c.max_uses !== null && c.used_count >= c.max_uses) return 'منتهي';
+  return 'نشط';
+}
+
+/* ── Fetch coupons ── */
+export function useCoupons() {
+  return useQuery({
+    queryKey: ['coupons'],
+    queryFn: async (): Promise<Coupon[]> => {
+      const { data, error } = await supabase
+        .from('coupons')
+        .select(`
+          *,
+          products(title),
+          countries(name),
+          profiles(full_name)
+        `)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      return (data ?? []) as Coupon[];
+    },
+  });
+}
+
+/* ── Fetch products (for dropdown) ── */
+export function useCouponProducts() {
+  return useQuery({
+    queryKey: ['coupon-products'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('products')
+        .select('id, title')
+        .eq('is_active', true)
+        .order('title');
+      if (error) throw error;
+      return (data ?? []) as { id: string; title: string }[];
+    },
+  });
+}
+
+/* ── Fetch countries (for dropdown) ── */
+export function useCouponCountries() {
+  return useQuery({
+    queryKey: ['coupon-countries'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('countries')
+        .select('id, name')
+        .eq('is_active', true)
+        .order('name');
+      if (error) throw error;
+      return (data ?? []) as { id: string; name: string }[];
+    },
+  });
+}
+
+/* ── Upsert coupon ── */
+export interface UpsertCouponInput {
+  id?: string;
+  code: string;
+  type: CouponType;
+  value: number;
+  min_order: number;
+  max_uses?: number;
+  product_id?: string;
+  country_id?: string;
+  valid_from: string;
+  valid_to?: string;
+  is_active: boolean;
+}
+
+export function useUpsertCoupon() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: UpsertCouponInput) => {
+      const payload = {
+        id: input.id,
+        code: input.code.trim().toUpperCase(),
+        type: input.type,
+        value: input.value,
+        min_order: input.min_order,
+        max_uses: input.max_uses ?? null,
+        product_id: input.product_id || null,
+        country_id: input.country_id || null,
+        valid_from: input.valid_from,
+        valid_to: input.valid_to || null,
+        is_active: input.is_active,
+      };
+
+      const { data, error } = await supabase
+        .from('coupons')
+        .upsert(payload, { onConflict: 'id' })
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: (_, input) => {
+      qc.invalidateQueries({ queryKey: ['coupons'] });
+      toast.success(input.id ? 'تم تحديث الكوبون بنجاح' : 'تم إضافة الكوبون بنجاح');
+    },
+    onError: (e: Error) => {
+      const msg = e.message.includes('duplicate') || e.message.includes('unique')
+        ? 'هذا الكود مستخدم بالفعل، اختر كوداً مختلفاً'
+        : e.message;
+      toast.error(msg);
+    },
+  });
+}
+
+/* ── Toggle active status ── */
+export function useToggleCoupon() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, is_active }: { id: string; is_active: boolean }) => {
+      const { error } = await supabase
+        .from('coupons')
+        .update({ is_active })
+        .eq('id', id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['coupons'] });
+      toast.success('تم تحديث حالة الكوبون');
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+}
+
+/* ── Delete coupon ── */
+export function useDeleteCoupon() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from('coupons').delete().eq('id', id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['coupons'] });
+      toast.success('تم حذف الكوبون');
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+}
