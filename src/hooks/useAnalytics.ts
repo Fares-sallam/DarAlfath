@@ -10,6 +10,18 @@ export type Period =
   | 'هذا العام'
   | 'مخصص';
 
+type SelectedCountryLite = {
+  id: string;
+  name: string;
+  code: string;
+  currency: string;
+  currency_symbol: string;
+};
+
+function normalizeText(value?: string | null) {
+  return (value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
 /** Returns ISO date range [from, to] for a given period */
 export function getPeriodRange(
   period: Period,
@@ -32,7 +44,7 @@ export function getPeriodRange(
 
   const startOfWeek = (d: Date) => {
     const r = new Date(d);
-    const dow = r.getDay(); // Sunday = 0
+    const dow = r.getDay();
     r.setDate(r.getDate() - dow);
     r.setHours(0, 0, 0, 0);
     return r;
@@ -124,28 +136,18 @@ export function getPeriodRange(
   }
 }
 
-type SelectedCountryLite = {
-  id: string;
-  name: string;
-  code: string;
-  currency: string;
-  currency_symbol: string;
-};
-
-function normalizeText(value?: string | null) {
-  return (value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
-}
-
 /* ─────────────────────────────────────────────────────────
-   SHARED: fetch orders in date range
+   Shared orders fetch
 ───────────────────────────────────────────────────────── */
+
 type OrderRow = {
   id: string;
+  user_id?: string | null;
+  country_id?: string | null;
   total_price: number;
   status: string;
   created_at: string;
   discount_amount: number;
-  country?: string | null;
   shipping_address: {
     city?: string;
     governorate?: string;
@@ -179,20 +181,16 @@ function orderMatchesCountry(
 ) {
   if (!selectedCountry) return true;
 
-  const selectedName = normalizeText(selectedCountry.name);
-  const selectedCode = normalizeText(selectedCountry.code);
-
-  const candidates = [
-    normalizeText(order.country),
-    normalizeText(order.shipping_address?.country),
-  ].filter(Boolean);
-
-  if (candidates.length === 0) {
-    return true;
+  if (order.country_id) {
+    return order.country_id === selectedCountry.id;
   }
 
-  return candidates.some(
-    (candidate) => candidate === selectedName || candidate === selectedCode
+  const shippingCountry = normalizeText(order.shipping_address?.country);
+  if (!shippingCountry) return true;
+
+  return (
+    shippingCountry === normalizeText(selectedCountry.name) ||
+    shippingCountry === normalizeText(selectedCountry.code)
   );
 }
 
@@ -208,23 +206,24 @@ async function fetchOrdersInRange(from: string, to: string): Promise<OrderRow[]>
     .from('orders')
     .select(`
       id,
+      user_id,
+      country_id,
       total_price,
       status,
       created_at,
       discount_amount,
       shipping_address,
-      country,
       payment_methods(method_name),
       profiles(id, full_name, avatar_url)
     `)
     .gte('created_at', from)
     .lte('created_at', to)
-    .order('created_at', { ascending: true });
+    .order('created_at', { ascending: true })
+    .limit(1000);
 
   if (error) throw error;
 
   const orders = (data ?? []) as Omit<OrderRow, 'order_items'>[];
-
   if (orders.length === 0) return [];
 
   const orderIds = orders.map((o) => o.id);
@@ -239,7 +238,8 @@ async function fetchOrdersInRange(from: string, to: string): Promise<OrderRow[]>
       order_id,
       products(id, title, author, cover_url, cost_price)
     `)
-    .in('order_id', orderIds);
+    .in('order_id', orderIds)
+    .limit(5000);
 
   if (itemsErr) throw itemsErr;
 
@@ -257,12 +257,46 @@ async function fetchOrdersInRange(from: string, to: string): Promise<OrderRow[]>
   })) as OrderRow[];
 }
 
-/* ── Fallback: product catalogue stats when no orders exist ── */
-async function fetchProductFallback() {
-  const { data } = await supabase
+async function fetchScopedProductFallback(selectedCountryId?: string | null) {
+  let scopedIds: string[] | null = null;
+
+  if (selectedCountryId) {
+    const { data: invData, error: invErr } = await supabase
+      .from('product_inventory')
+      .select('product_id')
+      .eq('country_id', selectedCountryId);
+
+    if (!invErr) {
+      scopedIds = Array.from(
+        new Set(
+          ((invData ?? []) as { product_id: string }[])
+            .map((r) => r.product_id)
+            .filter(Boolean)
+        )
+      );
+
+      if (scopedIds.length === 0) {
+        return [] as {
+          id: string;
+          title: string;
+          base_price: number;
+          sale_price?: number;
+          cost_price: number;
+        }[];
+      }
+    }
+  }
+
+  let query = supabase
     .from('products')
     .select('id, title, base_price, sale_price, cost_price, is_active')
     .eq('is_active', true);
+
+  if (Array.isArray(scopedIds) && scopedIds.length > 0) {
+    query = query.in('id', scopedIds);
+  }
+
+  const { data } = await query;
 
   return (data ?? []) as {
     id: string;
@@ -276,6 +310,7 @@ async function fetchProductFallback() {
 /* ══════════════════════════════════════════════════════════
    KPI SUMMARY
 ══════════════════════════════════════════════════════════ */
+
 export interface KpiSummary {
   totalRevenue: number;
   totalProfit: number;
@@ -317,7 +352,7 @@ export function useKpiSummary(from: string, to: string) {
       const countryName = selectedCountry?.name ?? null;
 
       if (realOrders.length === 0) {
-        const prods = await fetchProductFallback();
+        const prods = await fetchScopedProductFallback(selectedCountry?.id);
         const rev = prods.reduce((s, p) => s + (p.sale_price ?? p.base_price), 0);
         const cost = prods.reduce((s, p) => s + p.cost_price, 0);
         const profit = rev - cost;
@@ -365,6 +400,7 @@ export function useKpiSummary(from: string, to: string) {
 /* ══════════════════════════════════════════════════════════
    REVENUE TREND
 ══════════════════════════════════════════════════════════ */
+
 export interface RevenueTrendPoint {
   label: string;
   revenue: number;
@@ -425,7 +461,7 @@ export function useRevenueTrend(from: string, to: string, period: Period) {
       const currencySymbol = selectedCountry?.currency_symbol ?? 'ج.م';
 
       if (realOrders.length === 0) {
-        const prods = await fetchProductFallback();
+        const prods = await fetchScopedProductFallback(selectedCountry?.id);
         return prods.slice(0, 8).map((p) => ({
           label: p.title.length > 12 ? p.title.slice(0, 12) + '…' : p.title,
           revenue: p.sale_price ?? p.base_price,
@@ -480,7 +516,6 @@ export function useRevenueTrend(from: string, to: string, period: Period) {
   });
 }
 
-/** Fill in missing time slots so the chart has no gaps */
 function buildTimeline(
   period: Period,
   from: string,
@@ -590,6 +625,7 @@ function buildTimeline(
 /* ══════════════════════════════════════════════════════════
    TOP SELLING BOOKS
 ══════════════════════════════════════════════════════════ */
+
 export interface TopBook {
   productId: string;
   title: string;
@@ -656,6 +692,7 @@ export function useTopBooks(from: string, to: string, limit = 10) {
 /* ══════════════════════════════════════════════════════════
    ORDERS BY STATUS
 ══════════════════════════════════════════════════════════ */
+
 export interface StatusCount {
   name: string;
   value: number;
@@ -712,6 +749,7 @@ export function useOrdersByStatus(from: string, to: string) {
 /* ══════════════════════════════════════════════════════════
    PAYMENT METHODS
 ══════════════════════════════════════════════════════════ */
+
 export interface PaymentCount {
   name: string;
   value: number;
@@ -767,6 +805,7 @@ export function usePaymentMethods(from: string, to: string) {
 /* ══════════════════════════════════════════════════════════
    CITIES
 ══════════════════════════════════════════════════════════ */
+
 export interface CityCount {
   city: string;
   orders: number;
@@ -827,6 +866,7 @@ export function useCitiesData(from: string, to: string) {
 /* ══════════════════════════════════════════════════════════
    TOP CUSTOMERS
 ══════════════════════════════════════════════════════════ */
+
 export interface TopCustomer {
   id: string;
   fullName: string;
@@ -871,7 +911,7 @@ export function useTopCustomers(from: string, to: string, limit = 5) {
             id: uid,
             fullName: o.profiles!.full_name ?? '—',
             email: '',
-            city: o.shipping_address?.city ?? '—',
+            city: o.shipping_address?.city ?? o.shipping_address?.governorate ?? '—',
             totalOrders: 0,
             totalSpent: 0,
             avatar: o.profiles!.avatar_url ?? undefined,
@@ -895,6 +935,7 @@ export function useTopCustomers(from: string, to: string, limit = 5) {
 /* ══════════════════════════════════════════════════════════
    INVENTORY ROTATION
 ══════════════════════════════════════════════════════════ */
+
 export interface InventoryItem {
   productId: string;
   title: string;
@@ -908,54 +949,65 @@ export function useInventoryRotation(limit = 8) {
   return useQuery({
     queryKey: ['analytics', 'inventory-rotation', selectedCountry?.id ?? 'all'],
     queryFn: async (): Promise<InventoryItem[]> => {
-      // المبيعات هنا أصبحت مرتبطة بالدولة الحالية
-      const [orders, inventoryResult] = await Promise.all([
-        fetchOrdersInRange(new Date(0).toISOString(), new Date().toISOString()),
-        supabase.from('product_inventory').select('product_id, stock').limit(500),
-      ]);
+      let soldOrderIds: string[] = [];
 
-      if (inventoryResult.error) throw inventoryResult.error;
+      if (selectedCountry?.id) {
+        const { data: scopedOrders, error: ordErr } = await supabase
+          .from('orders')
+          .select('id')
+          .eq('country_id', selectedCountry.id)
+          .not('status', 'in', '("ملغي","مرتجع")')
+          .limit(2000);
 
-      const scopedOrders = filterOrdersByCountry(
-        orders,
-        selectedCountry
-          ? {
-              id: selectedCountry.id,
-              name: selectedCountry.name,
-              code: selectedCountry.code,
-              currency: selectedCountry.currency,
-              currency_symbol: selectedCountry.currency_symbol,
-            }
-          : null
-      );
+        if (ordErr) throw ordErr;
+        soldOrderIds = ((scopedOrders ?? []) as { id: string }[]).map((o) => o.id);
+      }
 
-      const realOrders = scopedOrders.filter(
-        (o) => o.status !== 'ملغي' && o.status !== 'مرتجع'
-      );
+      const soldPromise =
+        selectedCountry?.id && soldOrderIds.length > 0
+          ? supabase
+              .from('order_items')
+              .select('quantity, products(id, title)')
+              .in('order_id', soldOrderIds)
+              .limit(5000)
+          : selectedCountry?.id
+          ? Promise.resolve({ data: [], error: null } as any)
+          : supabase
+              .from('order_items')
+              .select('quantity, products(id, title)')
+              .limit(5000);
+
+      const inventoryPromise = selectedCountry?.id
+        ? supabase
+            .from('product_inventory')
+            .select('product_id, stock')
+            .eq('country_id', selectedCountry.id)
+            .limit(2000)
+        : supabase
+            .from('product_inventory')
+            .select('product_id, stock')
+            .limit(2000);
+
+      const [{ data: sold, error: e1 }, { data: inventory, error: e2 }] =
+        await Promise.all([soldPromise, inventoryPromise]);
+
+      if (e1) throw e1;
+      if (e2) throw e2;
 
       const soldMap: Record<string, { title: string; qty: number }> = {};
-
-      for (const order of realOrders) {
-        for (const item of order.order_items ?? []) {
-          const p = item.products;
-          if (!p) continue;
-
-          if (!soldMap[p.id]) soldMap[p.id] = { title: p.title, qty: 0 };
-          soldMap[p.id].qty += item.quantity;
-        }
+      for (const item of (sold ?? []) as { quantity: number; products: { id: string; title: string } | null }[]) {
+        const p = item.products;
+        if (!p) continue;
+        if (!soldMap[p.id]) soldMap[p.id] = { title: p.title, qty: 0 };
+        soldMap[p.id].qty += item.quantity;
       }
 
       const stockMap: Record<string, number> = {};
-
-      for (const inv of (inventoryResult.data ?? []) as { product_id: string; stock: number }[]) {
+      for (const inv of (inventory ?? []) as { product_id: string; stock: number }[]) {
         stockMap[inv.product_id] = (stockMap[inv.product_id] ?? 0) + inv.stock;
       }
 
-      const allProductIds = new Set([
-        ...Object.keys(soldMap),
-        ...Object.keys(stockMap),
-      ]);
-
+      const allProductIds = new Set([...Object.keys(soldMap), ...Object.keys(stockMap)]);
       const result: InventoryItem[] = [];
 
       for (const id of allProductIds) {
@@ -967,7 +1019,9 @@ export function useInventoryRotation(limit = 8) {
         });
       }
 
-      return result.sort((a, b) => b.totalSold - a.totalSold).slice(0, limit);
+      return result
+        .sort((a, b) => b.totalSold - a.totalSold)
+        .slice(0, limit);
     },
   });
 }

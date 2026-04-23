@@ -2,7 +2,10 @@ import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/lib/supabase';
 import { useCountry } from '@/contexts/CountryContext';
 
-/* ── Types ── */
+/* ────────────────────────────────────────────── */
+/* Shared helpers */
+/* ────────────────────────────────────────────── */
+
 type SelectedCountryLite = {
   id: string;
   name: string;
@@ -11,26 +14,31 @@ type SelectedCountryLite = {
   currency_symbol: string;
 };
 
+function normalizeText(value?: string | null) {
+  return (value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
 type OrderLite = {
   id: string;
   user_id?: string | null;
+  country_id?: string | null;
   total_price: number;
   status: string;
   created_at: string;
-  country?: string | null;
   shipping_address?: {
     city?: string;
+    governorate?: string;
     country?: string;
   } | null;
   profiles?: {
     full_name?: string;
     avatar_url?: string;
   } | null;
+  countries?: {
+    name?: string;
+    currency_symbol?: string;
+  } | null;
 };
-
-function normalizeText(value?: string | null) {
-  return (value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
-}
 
 function orderMatchesCountry(
   order: OrderLite,
@@ -38,38 +46,32 @@ function orderMatchesCountry(
 ) {
   if (!selectedCountry) return true;
 
-  const selectedName = normalizeText(selectedCountry.name);
-  const selectedCode = normalizeText(selectedCountry.code);
-
-  const orderCountry = normalizeText(order.country);
-  const shippingCountry = normalizeText(order.shipping_address?.country);
-
-  const candidates = [orderCountry, shippingCountry].filter(Boolean);
-
-  if (candidates.length === 0) {
-    return true;
+  if (order.country_id) {
+    return order.country_id === selectedCountry.id;
   }
 
-  return candidates.some(
-    (candidate) => candidate === selectedName || candidate === selectedCode
-  );
+  const selectedName = normalizeText(selectedCountry.name);
+  const selectedCode = normalizeText(selectedCountry.code);
+  const shippingCountry = normalizeText(order.shipping_address?.country);
+
+  if (!shippingCountry) return true;
+
+  return shippingCountry === selectedName || shippingCountry === selectedCode;
 }
 
-async function fetchOrdersForDashboard(
-  limit?: number,
-  fromIso?: string
-): Promise<OrderLite[]> {
+async function fetchOrdersBase(limit?: number, fromIso?: string): Promise<OrderLite[]> {
   let query = supabase
     .from('orders')
     .select(`
       id,
       user_id,
+      country_id,
       total_price,
       status,
       created_at,
-      country,
       shipping_address,
-      profiles(full_name, avatar_url)
+      profiles(full_name, avatar_url),
+      countries(name, currency_symbol)
     `)
     .order('created_at', { ascending: false });
 
@@ -82,7 +84,32 @@ async function fetchOrdersForDashboard(
   return (data ?? []) as OrderLite[];
 }
 
-/* ── Books summary stats ── */
+async function fetchScopedProductIds(selectedCountryId?: string | null): Promise<string[] | null> {
+  if (!selectedCountryId) return null;
+
+  const { data, error } = await supabase
+    .from('product_inventory')
+    .select('product_id')
+    .eq('country_id', selectedCountryId);
+
+  if (error) {
+    console.warn('[useDashboard] product_inventory country scope fallback:', error.message);
+    return null;
+  }
+
+  return Array.from(
+    new Set(
+      ((data ?? []) as { product_id: string }[])
+        .map((row) => row.product_id)
+        .filter(Boolean)
+    )
+  );
+}
+
+/* ────────────────────────────────────────────── */
+/* Books summary stats */
+/* ────────────────────────────────────────────── */
+
 export interface BookStats {
   total: number;
   active: number;
@@ -92,59 +119,15 @@ export interface BookStats {
   both: number;
 }
 
-async function fetchScopedProductIds(selectedCountry: SelectedCountryLite | null): Promise<string[] | null> {
-  if (!selectedCountry) return null;
-
-  const tryWithCountry = await supabase
-    .from('product_inventory')
-    .select('product_id, stock, country_id');
-
-  if (!tryWithCountry.error) {
-    const rows = (tryWithCountry.data ?? []) as {
-      product_id: string;
-      stock: number;
-      country_id?: string | null;
-    }[];
-
-    return Array.from(
-      new Set(
-        rows
-          .filter((r) => r.country_id === selectedCountry.id && (r.stock ?? 0) > 0)
-          .map((r) => r.product_id)
-      )
-    );
-  }
-
-  const tryWithoutCountry = await supabase
-    .from('product_inventory')
-    .select('product_id, stock');
-
-  if (!tryWithoutCountry.error) {
-    return null;
-  }
-
-  return null;
-}
-
 export function useBookStats() {
   const { selectedCountry } = useCountry();
 
   return useQuery({
     queryKey: ['dashboard', 'book-stats', selectedCountry?.id ?? 'all'],
     queryFn: async (): Promise<BookStats> => {
-      const productIds = await fetchScopedProductIds(
-        selectedCountry
-          ? {
-              id: selectedCountry.id,
-              name: selectedCountry.name,
-              code: selectedCountry.code,
-              currency: selectedCountry.currency,
-              currency_symbol: selectedCountry.currency_symbol,
-            }
-          : null
-      );
+      const scopedIds = await fetchScopedProductIds(selectedCountry?.id);
 
-      if (Array.isArray(productIds) && productIds.length === 0) {
+      if (Array.isArray(scopedIds) && scopedIds.length === 0) {
         return {
           total: 0,
           active: 0,
@@ -157,8 +140,8 @@ export function useBookStats() {
 
       let query = supabase.from('products').select('id, is_active, type');
 
-      if (Array.isArray(productIds) && productIds.length > 0) {
-        query = query.in('id', productIds);
+      if (Array.isArray(scopedIds) && scopedIds.length > 0) {
+        query = query.in('id', scopedIds);
       }
 
       const { data, error } = await query;
@@ -178,7 +161,10 @@ export function useBookStats() {
   });
 }
 
-/* ── Top selling books (last 30 days) ── */
+/* ────────────────────────────────────────────── */
+/* Top selling books (last 30 days) */
+/* ────────────────────────────────────────────── */
+
 export interface TopSellingBook {
   productId: string;
   title: string;
@@ -198,8 +184,8 @@ export function useTopSellingBooks(limit = 5) {
       const from = new Date();
       from.setDate(from.getDate() - 30);
 
-      const allOrders = await fetchOrdersForDashboard(undefined, from.toISOString());
-      const validOrders = allOrders.filter(
+      const orders = await fetchOrdersBase(undefined, from.toISOString());
+      const validOrders = orders.filter(
         (o) =>
           o.status !== 'ملغي' &&
           o.status !== 'مرتجع' &&
@@ -223,7 +209,12 @@ export function useTopSellingBooks(limit = 5) {
 
       const { data, error } = await supabase
         .from('order_items')
-        .select('quantity, price_per_item, products(id, title, author, cover_url, type), order_id')
+        .select(`
+          quantity,
+          price_per_item,
+          order_id,
+          products(id, title, author, cover_url, type)
+        `)
         .in('order_id', orderIds);
 
       if (error) throw error;
@@ -268,7 +259,10 @@ export function useTopSellingBooks(limit = 5) {
   });
 }
 
-/* ── Recent audit logs ── */
+/* ────────────────────────────────────────────── */
+/* Recent audit logs */
+/* ────────────────────────────────────────────── */
+
 export interface AuditEntry {
   id: string;
   action: string;
@@ -287,7 +281,13 @@ export function useRecentAuditLogs(limit = 10) {
       const { data, error } = await supabase
         .from('audit_logs')
         .select(`
-          id, action, table_name, record_id, old_data, new_data, created_at,
+          id,
+          action,
+          table_name,
+          record_id,
+          old_data,
+          new_data,
+          created_at,
           profiles(full_name, avatar_url)
         `)
         .order('created_at', { ascending: false })
@@ -299,16 +299,20 @@ export function useRecentAuditLogs(limit = 10) {
   });
 }
 
-/* ── Orders summary ── */
+/* ────────────────────────────────────────────── */
+/* Recent orders */
+/* ────────────────────────────────────────────── */
+
 export interface OrderSummary {
   id: string;
   user_id?: string | null;
   total_price: number;
   status: string;
   created_at: string;
-  country?: string | null;
-  shipping_address?: { city?: string; country?: string };
+  country_id?: string | null;
+  shipping_address?: { city?: string; governorate?: string; country?: string };
   profiles?: { full_name?: string; avatar_url?: string };
+  countries?: { name?: string; currency_symbol?: string } | null;
   currencySymbol?: string;
 }
 
@@ -318,9 +322,9 @@ export function useRecentOrders(limit = 5) {
   return useQuery({
     queryKey: ['dashboard', 'recent-orders', limit, selectedCountry?.id ?? 'all'],
     queryFn: async (): Promise<OrderSummary[]> => {
-      const rows = await fetchOrdersForDashboard(100);
+      const rows = await fetchOrdersBase(100);
 
-      const filtered = rows
+      return rows
         .filter((row) =>
           orderMatchesCountry(
             row,
@@ -335,17 +339,19 @@ export function useRecentOrders(limit = 5) {
               : null
           )
         )
-        .slice(0, limit);
-
-      return filtered.map((row) => ({
-        ...row,
-        currencySymbol,
-      }));
+        .slice(0, limit)
+        .map((row) => ({
+          ...row,
+          currencySymbol: row.countries?.currency_symbol ?? currencySymbol,
+        }));
     },
   });
 }
 
-/* ── Dashboard KPIs ── */
+/* ────────────────────────────────────────────── */
+/* Dashboard KPI */
+/* ────────────────────────────────────────────── */
+
 export interface DashboardKpi {
   totalRevenue: number;
   totalOrders: number;
@@ -367,9 +373,9 @@ export function useDashboardKpi() {
       thisMonth.setDate(1);
       thisMonth.setHours(0, 0, 0, 0);
 
-      const orders = await fetchOrdersForDashboard(undefined, thisMonth.toISOString());
+      const rows = await fetchOrdersBase(undefined, thisMonth.toISOString());
 
-      const filteredOrders = orders.filter((o) =>
+      const filteredOrders = rows.filter((o) =>
         orderMatchesCountry(
           o,
           selectedCountry
