@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/lib/supabase';
+import { useCountry } from '@/contexts/CountryContext';
 
 export type Period =
   | 'اليوم'
@@ -123,8 +124,20 @@ export function getPeriodRange(
   }
 }
 
+type SelectedCountryLite = {
+  id: string;
+  name: string;
+  code: string;
+  currency: string;
+  currency_symbol: string;
+};
+
+function normalizeText(value?: string | null) {
+  return (value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
 /* ─────────────────────────────────────────────────────────
-   SHARED: fetch orders in date range (used by multiple hooks)
+   SHARED: fetch orders in date range
 ───────────────────────────────────────────────────────── */
 type OrderRow = {
   id: string;
@@ -132,7 +145,12 @@ type OrderRow = {
   status: string;
   created_at: string;
   discount_amount: number;
-  shipping_address: { city?: string; governorate?: string } | null;
+  country?: string | null;
+  shipping_address: {
+    city?: string;
+    governorate?: string;
+    country?: string;
+  } | null;
   payment_methods: { method_name: string } | null;
   order_items: {
     id?: string;
@@ -148,14 +166,54 @@ type OrderRow = {
       cost_price: number;
     } | null;
   }[];
-  profiles: { id: string; full_name: string | null; avatar_url: string | null } | null;
+  profiles: {
+    id: string;
+    full_name: string | null;
+    avatar_url: string | null;
+  } | null;
 };
+
+function orderMatchesCountry(
+  order: OrderRow,
+  selectedCountry: SelectedCountryLite | null
+) {
+  if (!selectedCountry) return true;
+
+  const selectedName = normalizeText(selectedCountry.name);
+  const selectedCode = normalizeText(selectedCountry.code);
+
+  const candidates = [
+    normalizeText(order.country),
+    normalizeText(order.shipping_address?.country),
+  ].filter(Boolean);
+
+  if (candidates.length === 0) {
+    return true;
+  }
+
+  return candidates.some(
+    (candidate) => candidate === selectedName || candidate === selectedCode
+  );
+}
+
+function filterOrdersByCountry(
+  orders: OrderRow[],
+  selectedCountry: SelectedCountryLite | null
+) {
+  return orders.filter((order) => orderMatchesCountry(order, selectedCountry));
+}
 
 async function fetchOrdersInRange(from: string, to: string): Promise<OrderRow[]> {
   const { data, error } = await supabase
     .from('orders')
     .select(`
-      id, total_price, status, created_at, discount_amount, shipping_address,
+      id,
+      total_price,
+      status,
+      created_at,
+      discount_amount,
+      shipping_address,
+      country,
       payment_methods(method_name),
       profiles(id, full_name, avatar_url)
     `)
@@ -225,16 +283,38 @@ export interface KpiSummary {
   avgOrderValue: number;
   profitMargin: number;
   isFallback: boolean;
+  currencyCode: string;
+  currencySymbol: string;
+  countryName: string | null;
 }
 
 export function useKpiSummary(from: string, to: string) {
+  const { selectedCountry } = useCountry();
+
   return useQuery({
-    queryKey: ['analytics', 'kpi', from, to],
+    queryKey: ['analytics', 'kpi', from, to, selectedCountry?.id ?? 'all'],
     queryFn: async (): Promise<KpiSummary> => {
       const orders = await fetchOrdersInRange(from, to);
-      const realOrders = orders.filter(
+      const scopedOrders = filterOrdersByCountry(
+        orders,
+        selectedCountry
+          ? {
+              id: selectedCountry.id,
+              name: selectedCountry.name,
+              code: selectedCountry.code,
+              currency: selectedCountry.currency,
+              currency_symbol: selectedCountry.currency_symbol,
+            }
+          : null
+      );
+
+      const realOrders = scopedOrders.filter(
         (o) => o.status !== 'ملغي' && o.status !== 'مرتجع'
       );
+
+      const currencyCode = selectedCountry?.currency ?? 'EGP';
+      const currencySymbol = selectedCountry?.currency_symbol ?? 'ج.م';
+      const countryName = selectedCountry?.name ?? null;
 
       if (realOrders.length === 0) {
         const prods = await fetchProductFallback();
@@ -249,6 +329,9 @@ export function useKpiSummary(from: string, to: string) {
           avgOrderValue: prods.length > 0 ? rev / prods.length : 0,
           profitMargin: rev > 0 ? (profit / rev) * 100 : 0,
           isFallback: true,
+          currencyCode,
+          currencySymbol,
+          countryName,
         };
       }
 
@@ -257,7 +340,6 @@ export function useKpiSummary(from: string, to: string) {
 
       for (const order of realOrders) {
         totalRevenue += order.total_price;
-
         for (const item of order.order_items ?? []) {
           totalCost += (item.products?.cost_price ?? 0) * item.quantity;
         }
@@ -272,6 +354,9 @@ export function useKpiSummary(from: string, to: string) {
         avgOrderValue: realOrders.length > 0 ? totalRevenue / realOrders.length : 0,
         profitMargin: totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0,
         isFallback: false,
+        currencyCode,
+        currencySymbol,
+        countryName,
       };
     },
   });
@@ -285,6 +370,8 @@ export interface RevenueTrendPoint {
   revenue: number;
   profit: number;
   orders: number;
+  currencyCode?: string;
+  currencySymbol?: string;
 }
 
 function getDayLabel(d: Date): string {
@@ -311,13 +398,31 @@ function getMonthLabel(d: Date): string {
 }
 
 export function useRevenueTrend(from: string, to: string, period: Period) {
+  const { selectedCountry } = useCountry();
+
   return useQuery({
-    queryKey: ['analytics', 'trend', from, to, period],
+    queryKey: ['analytics', 'trend', from, to, period, selectedCountry?.id ?? 'all'],
     queryFn: async (): Promise<RevenueTrendPoint[]> => {
       const orders = await fetchOrdersInRange(from, to);
-      const realOrders = orders.filter(
+      const scopedOrders = filterOrdersByCountry(
+        orders,
+        selectedCountry
+          ? {
+              id: selectedCountry.id,
+              name: selectedCountry.name,
+              code: selectedCountry.code,
+              currency: selectedCountry.currency,
+              currency_symbol: selectedCountry.currency_symbol,
+            }
+          : null
+      );
+
+      const realOrders = scopedOrders.filter(
         (o) => o.status !== 'ملغي' && o.status !== 'مرتجع'
       );
+
+      const currencyCode = selectedCountry?.currency ?? 'EGP';
+      const currencySymbol = selectedCountry?.currency_symbol ?? 'ج.م';
 
       if (realOrders.length === 0) {
         const prods = await fetchProductFallback();
@@ -326,6 +431,8 @@ export function useRevenueTrend(from: string, to: string, period: Period) {
           revenue: p.sale_price ?? p.base_price,
           profit: (p.sale_price ?? p.base_price) - p.cost_price,
           orders: 0,
+          currencyCode,
+          currencySymbol,
         }));
       }
 
@@ -368,7 +475,7 @@ export function useRevenueTrend(from: string, to: string, period: Period) {
         }
       }
 
-      return buildTimeline(period, from, to, grouped);
+      return buildTimeline(period, from, to, grouped, currencyCode, currencySymbol);
     },
   });
 }
@@ -378,7 +485,9 @@ function buildTimeline(
   period: Period,
   from: string,
   to: string,
-  grouped: Record<string, { revenue: number; cost: number; orders: number; sortKey: string }>
+  grouped: Record<string, { revenue: number; cost: number; orders: number; sortKey: string }>,
+  currencyCode = 'EGP',
+  currencySymbol = 'ج.م'
 ): RevenueTrendPoint[] {
   const fromDate = new Date(from);
   const toDate = new Date(to);
@@ -393,6 +502,8 @@ function buildTimeline(
         revenue: v?.revenue ?? 0,
         profit: (v?.revenue ?? 0) - (v?.cost ?? 0),
         orders: v?.orders ?? 0,
+        currencyCode,
+        currencySymbol,
       });
     }
     return points;
@@ -400,6 +511,7 @@ function buildTimeline(
 
   if (period === 'هذا الأسبوع') {
     const days = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+
     for (let i = 0; i < 7; i++) {
       const key = i.toString();
       const v = grouped[key];
@@ -408,6 +520,8 @@ function buildTimeline(
         revenue: v?.revenue ?? 0,
         profit: (v?.revenue ?? 0) - (v?.cost ?? 0),
         orders: v?.orders ?? 0,
+        currencyCode,
+        currencySymbol,
       });
     }
     return points;
@@ -438,6 +552,8 @@ function buildTimeline(
         revenue: v?.revenue ?? 0,
         profit: (v?.revenue ?? 0) - (v?.cost ?? 0),
         orders: v?.orders ?? 0,
+        currencyCode,
+        currencySymbol,
       });
     }
     return points;
@@ -461,6 +577,8 @@ function buildTimeline(
       revenue: v?.revenue ?? 0,
       profit: (v?.revenue ?? 0) - (v?.cost ?? 0),
       orders: v?.orders ?? 0,
+      currencyCode,
+      currencySymbol,
     });
 
     cur.setDate(cur.getDate() + 1);
@@ -482,11 +600,26 @@ export interface TopBook {
 }
 
 export function useTopBooks(from: string, to: string, limit = 10) {
+  const { selectedCountry } = useCountry();
+
   return useQuery({
-    queryKey: ['analytics', 'top-books', from, to, limit],
+    queryKey: ['analytics', 'top-books', from, to, limit, selectedCountry?.id ?? 'all'],
     queryFn: async (): Promise<TopBook[]> => {
       const orders = await fetchOrdersInRange(from, to);
-      const realOrders = orders.filter(
+      const scopedOrders = filterOrdersByCountry(
+        orders,
+        selectedCountry
+          ? {
+              id: selectedCountry.id,
+              name: selectedCountry.name,
+              code: selectedCountry.code,
+              currency: selectedCountry.currency,
+              currency_symbol: selectedCountry.currency_symbol,
+            }
+          : null
+      );
+
+      const realOrders = scopedOrders.filter(
         (o) => o.status !== 'ملغي' && o.status !== 'مرتجع'
       );
 
@@ -540,13 +673,28 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 export function useOrdersByStatus(from: string, to: string) {
+  const { selectedCountry } = useCountry();
+
   return useQuery({
-    queryKey: ['analytics', 'orders-status', from, to],
+    queryKey: ['analytics', 'orders-status', from, to, selectedCountry?.id ?? 'all'],
     queryFn: async (): Promise<StatusCount[]> => {
       const orders = await fetchOrdersInRange(from, to);
+      const scopedOrders = filterOrdersByCountry(
+        orders,
+        selectedCountry
+          ? {
+              id: selectedCountry.id,
+              name: selectedCountry.name,
+              code: selectedCountry.code,
+              currency: selectedCountry.currency,
+              currency_symbol: selectedCountry.currency_symbol,
+            }
+          : null
+      );
+
       const counts: Record<string, number> = {};
 
-      for (const o of orders) {
+      for (const o of scopedOrders) {
         counts[o.status] = (counts[o.status] ?? 0) + 1;
       }
 
@@ -573,11 +721,26 @@ export interface PaymentCount {
 const PAYMENT_COLORS = ['#16A34A', '#1D4ED8', '#8B5CF6', '#DC2626', '#F59E0B', '#0891B2'];
 
 export function usePaymentMethods(from: string, to: string) {
+  const { selectedCountry } = useCountry();
+
   return useQuery({
-    queryKey: ['analytics', 'payments', from, to],
+    queryKey: ['analytics', 'payments', from, to, selectedCountry?.id ?? 'all'],
     queryFn: async (): Promise<PaymentCount[]> => {
       const orders = await fetchOrdersInRange(from, to);
-      const realOrders = orders.filter(
+      const scopedOrders = filterOrdersByCountry(
+        orders,
+        selectedCountry
+          ? {
+              id: selectedCountry.id,
+              name: selectedCountry.name,
+              code: selectedCountry.code,
+              currency: selectedCountry.currency,
+              currency_symbol: selectedCountry.currency_symbol,
+            }
+          : null
+      );
+
+      const realOrders = scopedOrders.filter(
         (o) => o.status !== 'ملغي' && o.status !== 'مرتجع'
       );
 
@@ -612,11 +775,26 @@ export interface CityCount {
 }
 
 export function useCitiesData(from: string, to: string) {
+  const { selectedCountry } = useCountry();
+
   return useQuery({
-    queryKey: ['analytics', 'cities', from, to],
+    queryKey: ['analytics', 'cities', from, to, selectedCountry?.id ?? 'all'],
     queryFn: async (): Promise<CityCount[]> => {
       const orders = await fetchOrdersInRange(from, to);
-      const realOrders = orders.filter(
+      const scopedOrders = filterOrdersByCountry(
+        orders,
+        selectedCountry
+          ? {
+              id: selectedCountry.id,
+              name: selectedCountry.name,
+              code: selectedCountry.code,
+              currency: selectedCountry.currency,
+              currency_symbol: selectedCountry.currency_symbol,
+            }
+          : null
+      );
+
+      const realOrders = scopedOrders.filter(
         (o) => o.status !== 'ملغي' && o.status !== 'مرتجع'
       );
 
@@ -660,11 +838,26 @@ export interface TopCustomer {
 }
 
 export function useTopCustomers(from: string, to: string, limit = 5) {
+  const { selectedCountry } = useCountry();
+
   return useQuery({
-    queryKey: ['analytics', 'top-customers', from, to, limit],
+    queryKey: ['analytics', 'top-customers', from, to, limit, selectedCountry?.id ?? 'all'],
     queryFn: async (): Promise<TopCustomer[]> => {
       const orders = await fetchOrdersInRange(from, to);
-      const realOrders = orders.filter(
+      const scopedOrders = filterOrdersByCountry(
+        orders,
+        selectedCountry
+          ? {
+              id: selectedCountry.id,
+              name: selectedCountry.name,
+              code: selectedCountry.code,
+              currency: selectedCountry.currency,
+              currency_symbol: selectedCountry.currency_symbol,
+            }
+          : null
+      );
+
+      const realOrders = scopedOrders.filter(
         (o) => o.status !== 'ملغي' && o.status !== 'مرتجع' && o.profiles
       );
 
@@ -710,33 +903,51 @@ export interface InventoryItem {
 }
 
 export function useInventoryRotation(limit = 8) {
+  const { selectedCountry } = useCountry();
+
   return useQuery({
-    queryKey: ['analytics', 'inventory-rotation'],
+    queryKey: ['analytics', 'inventory-rotation', selectedCountry?.id ?? 'all'],
     queryFn: async (): Promise<InventoryItem[]> => {
-      const [{ data: sold, error: e1 }, { data: inventory, error: e2 }] = await Promise.all([
-        supabase.from('order_items').select('quantity, products(id, title)').limit(2000),
+      // المبيعات هنا أصبحت مرتبطة بالدولة الحالية
+      const [orders, inventoryResult] = await Promise.all([
+        fetchOrdersInRange(new Date(0).toISOString(), new Date().toISOString()),
         supabase.from('product_inventory').select('product_id, stock').limit(500),
       ]);
 
-      if (e1) throw e1;
-      if (e2) throw e2;
+      if (inventoryResult.error) throw inventoryResult.error;
+
+      const scopedOrders = filterOrdersByCountry(
+        orders,
+        selectedCountry
+          ? {
+              id: selectedCountry.id,
+              name: selectedCountry.name,
+              code: selectedCountry.code,
+              currency: selectedCountry.currency,
+              currency_symbol: selectedCountry.currency_symbol,
+            }
+          : null
+      );
+
+      const realOrders = scopedOrders.filter(
+        (o) => o.status !== 'ملغي' && o.status !== 'مرتجع'
+      );
 
       const soldMap: Record<string, { title: string; qty: number }> = {};
 
-      for (const item of (sold ?? []) as {
-        quantity: number;
-        products: { id: string; title: string } | null;
-      }[]) {
-        const p = item.products;
-        if (!p) continue;
+      for (const order of realOrders) {
+        for (const item of order.order_items ?? []) {
+          const p = item.products;
+          if (!p) continue;
 
-        if (!soldMap[p.id]) soldMap[p.id] = { title: p.title, qty: 0 };
-        soldMap[p.id].qty += item.quantity;
+          if (!soldMap[p.id]) soldMap[p.id] = { title: p.title, qty: 0 };
+          soldMap[p.id].qty += item.quantity;
+        }
       }
 
       const stockMap: Record<string, number> = {};
 
-      for (const inv of (inventory ?? []) as { product_id: string; stock: number }[]) {
+      for (const inv of (inventoryResult.data ?? []) as { product_id: string; stock: number }[]) {
         stockMap[inv.product_id] = (stockMap[inv.product_id] ?? 0) + inv.stock;
       }
 
@@ -756,9 +967,7 @@ export function useInventoryRotation(limit = 8) {
         });
       }
 
-      return result
-        .sort((a, b) => b.totalSold - a.totalSold)
-        .slice(0, limit);
+      return result.sort((a, b) => b.totalSold - a.totalSold).slice(0, limit);
     },
   });
 }

@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 
 import { AuthProvider } from "@/contexts/AuthContext";
+import { CountryProvider } from "@/contexts/CountryContext";
 import { LogoProvider } from "@/contexts/LogoContext";
 import ProtectedRoute from "@/components/auth/ProtectedRoute";
 
@@ -48,132 +49,125 @@ const App = () => {
         <Toaster />
         <Sonner position="top-center" />
         <AuthProvider>
-          <LogoProvider>
-            <BrowserRouter>
-              <Routes>
-                {/* Public */}
-                <Route path="/login" element={<Login />} />
+          <CountryProvider>
+            <LogoProvider>
+              <BrowserRouter>
+                <Routes>
+                  <Route path="/login" element={<Login />} />
 
-                {/* Dashboard */}
-                <Route
-                  path="/"
-                  element={
-                    <ProtectedRoute>
-                      <Index />
-                    </ProtectedRoute>
-                  }
-                />
+                  <Route
+                    path="/"
+                    element={
+                      <ProtectedRoute>
+                        <Index />
+                      </ProtectedRoute>
+                    }
+                  />
 
-                {/* Products / Content */}
-                <Route
-                  path="/books"
-                  element={
-                    <ProtectedRoute permission="can_manage_products">
-                      <Books />
-                    </ProtectedRoute>
-                  }
-                />
+                  <Route
+                    path="/books"
+                    element={
+                      <ProtectedRoute permission="can_manage_products">
+                        <Books />
+                      </ProtectedRoute>
+                    }
+                  />
 
-                <Route
-                  path="/series"
-                  element={
-                    <ProtectedRoute permission="can_manage_products">
-                      <Series />
-                    </ProtectedRoute>
-                  }
-                />
+                  <Route
+                    path="/series"
+                    element={
+                      <ProtectedRoute permission="can_manage_products">
+                        <Series />
+                      </ProtectedRoute>
+                    }
+                  />
 
-                {/* Orders / Sales */}
-                <Route
-                  path="/orders"
-                  element={
-                    <ProtectedRoute permission="can_manage_orders">
-                      <Orders />
-                    </ProtectedRoute>
-                  }
-                />
+                  <Route
+                    path="/orders"
+                    element={
+                      <ProtectedRoute permission="can_manage_orders">
+                        <Orders />
+                      </ProtectedRoute>
+                    }
+                  />
 
-                <Route
-                  path="/coupons"
-                  element={
-                    <ProtectedRoute permission="can_manage_coupons">
-                      <Coupons />
-                    </ProtectedRoute>
-                  }
-                />
+                  <Route
+                    path="/coupons"
+                    element={
+                      <ProtectedRoute permission="can_manage_coupons">
+                        <Coupons />
+                      </ProtectedRoute>
+                    }
+                  />
 
-                {/* Users / Admins */}
-                <Route
-                  path="/customers"
-                  element={
-                    <ProtectedRoute permission="can_manage_users">
-                      <Customers />
-                    </ProtectedRoute>
-                  }
-                />
+                  <Route
+                    path="/customers"
+                    element={
+                      <ProtectedRoute permission="can_manage_users">
+                        <Customers />
+                      </ProtectedRoute>
+                    }
+                  />
 
-                <Route
-                  path="/admins"
-                  element={
-                    <ProtectedRoute permission="can_manage_users">
-                      <AdminSettings />
-                    </ProtectedRoute>
-                  }
-                />
+                  <Route
+                    path="/admins"
+                    element={
+                      <ProtectedRoute permission="can_manage_users">
+                        <AdminSettings />
+                      </ProtectedRoute>
+                    }
+                  />
 
-                {/* Inventory / Shipping */}
-                <Route
-                  path="/inventory"
-                  element={
-                    <ProtectedRoute permission="can_manage_inventory">
-                      <Inventory />
-                    </ProtectedRoute>
-                  }
-                />
+                  <Route
+                    path="/inventory"
+                    element={
+                      <ProtectedRoute permission="can_manage_inventory">
+                        <Inventory />
+                      </ProtectedRoute>
+                    }
+                  />
 
-                <Route
-                  path="/shipping"
-                  element={
-                    <ProtectedRoute permission="can_manage_shipping">
-                      <Shipping />
-                    </ProtectedRoute>
-                  }
-                />
+                  <Route
+                    path="/shipping"
+                    element={
+                      <ProtectedRoute permission="can_manage_shipping">
+                        <Shipping />
+                      </ProtectedRoute>
+                    }
+                  />
 
-                {/* Reports */}
-                <Route
-                  path="/analytics"
-                  element={
-                    <ProtectedRoute permission="can_view_analytics">
-                      <Analytics />
-                    </ProtectedRoute>
-                  }
-                />
+                  <Route
+                    path="/analytics"
+                    element={
+                      <ProtectedRoute permission="can_view_analytics">
+                        <Analytics />
+                      </ProtectedRoute>
+                    }
+                  />
 
-                <Route
-                  path="/activity"
-                  element={
-                    <ProtectedRoute permission="can_view_activity_log">
-                      <ActivityLog />
-                    </ProtectedRoute>
-                  }
-                />
+                  <Route
+                    path="/activity"
+                    element={
+                      <ProtectedRoute permission="can_view_activity_log">
+                        <ActivityLog />
+                      </ProtectedRoute>
+                    }
+                  />
 
-                {/* Settings */}
-                <Route
-                  path="/settings"
-                  element={
-                    <ProtectedRoute permission="can_manage_users">
-                      <Settings />
-                    </ProtectedRoute>
-                  }
-                />
+                  <Route
+                    path="/settings"
+                    element={
+                      <ProtectedRoute permission="can_manage_users">
+                        <Settings />
+                      </ProtectedRoute>
+                    }
+                  />
 
-                {/* Catch-all */}
-                <Route path="*" element={<NotFound />} />
-              </Routes>
-            </BrowserRouter>
-          </LogoProvider>
+                  <Route path="*" element={<NotFound />} />
+                </Routes>
+              </BrowserRouter>
+            </LogoProvider>
+          </CountryProvider>
         </AuthProvider>
       </TooltipProvider>
     </QueryClientProvider>

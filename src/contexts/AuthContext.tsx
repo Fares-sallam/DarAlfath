@@ -9,6 +9,8 @@ import {
 } from 'react';
 import { supabase } from '@/lib/supabase';
 
+export const SYSTEM_OWNER_EMAIL = 'faresalsaid780@gmail.com';
+
 export interface AdminPermissions {
   can_manage_products: boolean;
   can_manage_orders: boolean;
@@ -40,7 +42,10 @@ export interface AuthUser {
   role: string;
   avatarUrl?: string;
   isActive: boolean;
+  isSystemOwner: boolean;
   permissions: AdminPermissions;
+  primaryCountryId: string | null;
+  allowedCountryIds: string[];
 }
 
 interface AuthContextType {
@@ -55,32 +60,48 @@ const AuthContext = createContext<AuthContextType>({
   logout: async () => {},
 });
 
+function normalizeEmail(email?: string | null) {
+  return (email ?? '').trim().toLowerCase();
+}
+
 async function fetchProfile(userId: string, email: string): Promise<AuthUser> {
   try {
-    const [{ data: profile, error: profileError }, { data: adminSettings, error: adminError }] =
-      await Promise.all([
-        supabase
-          .from('profiles')
-          .select('id, full_name, role, avatar_url, is_active')
-          .eq('id', userId)
-          .maybeSingle(),
+    const normalizedEmail = normalizeEmail(email);
+    const isSystemOwner = normalizedEmail === SYSTEM_OWNER_EMAIL.toLowerCase();
 
-        supabase
-          .from('admin_settings')
-          .select(`
-            can_manage_products,
-            can_manage_orders,
-            can_manage_users,
-            can_manage_inventory,
-            can_manage_coupons,
-            can_manage_shipping,
-            can_view_analytics,
-            can_export,
-            can_view_activity_log
-          `)
-          .eq('user_id', userId)
-          .maybeSingle(),
-      ]);
+    const [
+      { data: profile, error: profileError },
+      { data: adminSettings, error: adminError },
+      { data: countryAccessRows, error: countryAccessError },
+    ] = await Promise.all([
+      supabase
+        .from('profiles')
+        .select('id, full_name, role, avatar_url, is_active')
+        .eq('id', userId)
+        .maybeSingle(),
+
+      supabase
+        .from('admin_settings')
+        .select(`
+          country_id,
+          can_manage_products,
+          can_manage_orders,
+          can_manage_users,
+          can_manage_inventory,
+          can_manage_coupons,
+          can_manage_shipping,
+          can_view_analytics,
+          can_export,
+          can_view_activity_log
+        `)
+        .eq('user_id', userId)
+        .maybeSingle(),
+
+      supabase
+        .from('admin_country_access')
+        .select('country_id, is_primary')
+        .eq('user_id', userId),
+    ]);
 
     if (profileError) {
       console.error('[Auth] profile fetch error:', profileError.message);
@@ -90,6 +111,39 @@ async function fetchProfile(userId: string, email: string): Promise<AuthUser> {
       console.error('[Auth] admin settings fetch error:', adminError.message);
     }
 
+    if (countryAccessError) {
+      console.error('[Auth] country access fetch error:', countryAccessError.message);
+    }
+
+    const permissions: AdminPermissions = adminSettings
+      ? {
+          can_manage_products: adminSettings.can_manage_products ?? false,
+          can_manage_orders: adminSettings.can_manage_orders ?? false,
+          can_manage_users: adminSettings.can_manage_users ?? false,
+          can_manage_inventory: adminSettings.can_manage_inventory ?? false,
+          can_manage_coupons: adminSettings.can_manage_coupons ?? false,
+          can_manage_shipping: adminSettings.can_manage_shipping ?? false,
+          can_view_analytics: adminSettings.can_view_analytics ?? false,
+          can_export: adminSettings.can_export ?? false,
+          can_view_activity_log: adminSettings.can_view_activity_log ?? false,
+        }
+      : { ...DEFAULT_PERMISSIONS };
+
+    const accessRows =
+      ((countryAccessRows ?? []) as { country_id: string; is_primary: boolean }[]) || [];
+
+    const allowedCountryIds = accessRows.length
+      ? Array.from(new Set(accessRows.map((row) => row.country_id).filter(Boolean)))
+      : adminSettings?.country_id
+      ? [adminSettings.country_id]
+      : [];
+
+    const primaryCountryId =
+      accessRows.find((row) => row.is_primary)?.country_id ??
+      adminSettings?.country_id ??
+      allowedCountryIds[0] ??
+      null;
+
     return {
       id: userId,
       email,
@@ -97,19 +151,10 @@ async function fetchProfile(userId: string, email: string): Promise<AuthUser> {
       role: profile?.role || 'user',
       avatarUrl: profile?.avatar_url || undefined,
       isActive: profile?.is_active ?? true,
-      permissions: adminSettings
-        ? {
-            can_manage_products: adminSettings.can_manage_products ?? false,
-            can_manage_orders: adminSettings.can_manage_orders ?? false,
-            can_manage_users: adminSettings.can_manage_users ?? false,
-            can_manage_inventory: adminSettings.can_manage_inventory ?? false,
-            can_manage_coupons: adminSettings.can_manage_coupons ?? false,
-            can_manage_shipping: adminSettings.can_manage_shipping ?? false,
-            can_view_analytics: adminSettings.can_view_analytics ?? false,
-            can_export: adminSettings.can_export ?? false,
-            can_view_activity_log: adminSettings.can_view_activity_log ?? false,
-          }
-        : { ...DEFAULT_PERMISSIONS },
+      isSystemOwner,
+      permissions,
+      primaryCountryId,
+      allowedCountryIds,
     };
   } catch (err) {
     console.error('[Auth] fetchProfile unexpected error:', err);
@@ -120,7 +165,10 @@ async function fetchProfile(userId: string, email: string): Promise<AuthUser> {
       fullName: email.split('@')[0],
       role: 'user',
       isActive: true,
+      isSystemOwner: normalizeEmail(email) === SYSTEM_OWNER_EMAIL.toLowerCase(),
       permissions: { ...DEFAULT_PERMISSIONS },
+      primaryCountryId: null,
+      allowedCountryIds: [],
     };
   }
 }

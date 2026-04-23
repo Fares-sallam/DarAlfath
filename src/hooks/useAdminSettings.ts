@@ -7,7 +7,7 @@ import { FunctionsHttpError } from '@supabase/supabase-js';
 export const SYSTEM_OWNER_EMAIL = 'faresalsaid780@gmail.com';
 
 export function isSystemOwner(email?: string | null): boolean {
-  return email?.toLowerCase() === SYSTEM_OWNER_EMAIL.toLowerCase();
+  return (email ?? '').trim().toLowerCase() === SYSTEM_OWNER_EMAIL.toLowerCase();
 }
 
 /* ── Types ── */
@@ -21,6 +21,19 @@ export interface AdminPermissions {
   can_view_analytics: boolean;
   can_export: boolean;
   can_view_activity_log: boolean;
+}
+
+export interface CountryAccessItem {
+  id?: string;
+  country_id: string;
+  is_primary: boolean;
+  countries?: {
+    id?: string;
+    name: string;
+    code?: string;
+    currency?: string;
+    currency_symbol?: string;
+  } | null;
 }
 
 export interface AdminSetting extends AdminPermissions {
@@ -38,33 +51,151 @@ export interface AdminSetting extends AdminPermissions {
     is_active: boolean;
     created_at: string;
   } | null;
-  countries?: { name: string } | null;
+  countries?: {
+    id?: string;
+    name: string;
+    code?: string;
+    currency?: string;
+    currency_symbol?: string;
+  } | null;
+  accessible_countries: CountryAccessItem[];
+  primary_country_id: string | null;
 }
 
-/* ── Fetch all admins with their settings ── */
-export function useAdminSettings() {
+export interface CountryOption {
+  id: string;
+  name: string;
+  code: string;
+  is_active: boolean;
+  currency: string;
+  currency_symbol: string;
+  created_at: string;
+}
+
+/* ── Shared helpers ── */
+async function syncAdminCountryAccess(
+  userId: string,
+  countryIds: string[],
+  primaryCountryId: string | null
+) {
+  const uniqueIds = Array.from(new Set(countryIds.filter(Boolean)));
+
+  const { error: deleteError } = await supabase
+    .from('admin_country_access')
+    .delete()
+    .eq('user_id', userId);
+
+  if (deleteError) throw deleteError;
+
+  if (uniqueIds.length === 0) {
+    return;
+  }
+
+  const rows = uniqueIds.map((countryId) => ({
+    user_id: userId,
+    country_id: countryId,
+    is_primary: primaryCountryId ? primaryCountryId === countryId : false,
+  }));
+
+  const { error: insertError } = await supabase
+    .from('admin_country_access')
+    .insert(rows);
+
+  if (insertError) throw insertError;
+}
+
+/* ── Fetch active countries for admin UI ── */
+export function useAdminCountries() {
   return useQuery({
-    queryKey: ['admin-settings'],
-    queryFn: async (): Promise<AdminSetting[]> => {
+    queryKey: ['admin-countries'],
+    queryFn: async (): Promise<CountryOption[]> => {
       const { data, error } = await supabase
-        .from('admin_settings')
-        .select(`
-          id, user_id, country_id, created_at,
-          can_manage_products, can_manage_orders, can_manage_users,
-          can_manage_inventory, can_manage_coupons, can_manage_shipping,
-          can_view_analytics, can_export, can_view_activity_log,
-          profiles(id, full_name, email, phone, role, avatar_url, is_active, created_at),
-          countries(name)
-        `)
-        .order('created_at', { ascending: true });
+        .from('countries')
+        .select('id, name, code, is_active, currency, currency_symbol, created_at')
+        .eq('is_active', true)
+        .order('name');
 
       if (error) throw error;
-      return (data ?? []) as AdminSetting[];
+      return (data ?? []) as CountryOption[];
     },
   });
 }
 
-/* ── Fetch all profiles with admin role (for adding new admins) ── */
+/* ── Fetch all admins with settings + multi-country access ── */
+export function useAdminSettings() {
+  return useQuery({
+    queryKey: ['admin-settings'],
+    queryFn: async (): Promise<AdminSetting[]> => {
+      const [
+        { data: settingsData, error: settingsError },
+        { data: countryAccessData, error: countryAccessError },
+      ] = await Promise.all([
+        supabase
+          .from('admin_settings')
+          .select(`
+            id,
+            user_id,
+            country_id,
+            created_at,
+            can_manage_products,
+            can_manage_orders,
+            can_manage_users,
+            can_manage_inventory,
+            can_manage_coupons,
+            can_manage_shipping,
+            can_view_analytics,
+            can_export,
+            can_view_activity_log,
+            profiles(id, full_name, email, phone, role, avatar_url, is_active, created_at),
+            countries(id, name, code, currency, currency_symbol)
+          `)
+          .order('created_at', { ascending: true }),
+
+        supabase
+          .from('admin_country_access')
+          .select(`
+            id,
+            user_id,
+            country_id,
+            is_primary,
+            countries(id, name, code, currency, currency_symbol)
+          `),
+      ]);
+
+      if (settingsError) throw settingsError;
+      if (countryAccessError) throw countryAccessError;
+
+      const accessByUser: Record<string, CountryAccessItem[]> = {};
+
+      for (const row of (countryAccessData ?? []) as (CountryAccessItem & { user_id: string })[]) {
+        if (!accessByUser[row.user_id]) accessByUser[row.user_id] = [];
+        accessByUser[row.user_id].push({
+          id: row.id,
+          country_id: row.country_id,
+          is_primary: row.is_primary,
+          countries: row.countries ?? null,
+        });
+      }
+
+      return ((settingsData ?? []) as AdminSetting[]).map((row) => {
+        const accessible = accessByUser[row.user_id] ?? [];
+        const primaryAccess =
+          accessible.find((c) => c.is_primary) ??
+          accessible.find((c) => c.country_id === row.country_id) ??
+          null;
+
+        return {
+          ...row,
+          can_view_activity_log: row.can_view_activity_log ?? false,
+          accessible_countries: accessible,
+          primary_country_id: primaryAccess?.country_id ?? row.country_id ?? null,
+        };
+      });
+    },
+  });
+}
+
+/* ── Fetch all profiles with admin-capable roles ── */
 export function useAdminProfiles() {
   return useQuery({
     queryKey: ['admin-profiles'],
@@ -81,28 +212,39 @@ export function useAdminProfiles() {
   });
 }
 
-/* ── Update admin permissions ── */
+/* ── Update admin permissions + country access ── */
 export function useUpdateAdminPermissions() {
   const qc = useQueryClient();
 
   return useMutation({
     mutationFn: async ({
       settingId,
+      userId,
       permissions,
+      countryIds,
+      primaryCountryId,
     }: {
       settingId: string;
+      userId: string;
       permissions: AdminPermissions;
+      countryIds: string[];
+      primaryCountryId: string | null;
     }) => {
       const { error } = await supabase
         .from('admin_settings')
-        .update(permissions)
+        .update({
+          ...permissions,
+          country_id: primaryCountryId,
+        })
         .eq('id', settingId);
 
       if (error) throw error;
+
+      await syncAdminCountryAccess(userId, countryIds, primaryCountryId);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['admin-settings'] });
-      toast.success('تم حفظ الصلاحيات بنجاح');
+      toast.success('تم حفظ الصلاحيات والدول بنجاح');
     },
     onError: (e: Error) => toast.error('فشل حفظ الصلاحيات: ' + e.message),
   });
@@ -113,7 +255,19 @@ export function useUpdateProfileRole() {
   const qc = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ userId, role }: { userId: string; role: string }) => {
+    mutationFn: async ({
+      userId,
+      role,
+      userEmail,
+    }: {
+      userId: string;
+      role: string;
+      userEmail?: string | null;
+    }) => {
+      if (isSystemOwner(userEmail)) {
+        throw new Error('لا يمكن تغيير دور مالك النظام');
+      }
+
       const { error } = await supabase
         .from('profiles')
         .update({ role })
@@ -138,10 +292,16 @@ export function useToggleAdminStatus() {
     mutationFn: async ({
       userId,
       isActive,
+      userEmail,
     }: {
       userId: string;
       isActive: boolean;
+      userEmail?: string | null;
     }) => {
+      if (isSystemOwner(userEmail)) {
+        throw new Error('لا يمكن تعطيل أو تفعيل مالك النظام من هنا');
+      }
+
       const { error } = await supabase
         .from('profiles')
         .update({ is_active: isActive })
@@ -157,7 +317,7 @@ export function useToggleAdminStatus() {
   });
 }
 
-/* ── Add new admin_settings entry ── */
+/* ── Add new admin_settings entry for existing user ── */
 export function useCreateAdminSetting() {
   const qc = useQueryClient();
 
@@ -165,15 +325,25 @@ export function useCreateAdminSetting() {
     mutationFn: async ({
       userId,
       permissions,
+      countryIds,
+      primaryCountryId,
     }: {
       userId: string;
       permissions: AdminPermissions;
+      countryIds: string[];
+      primaryCountryId: string | null;
     }) => {
       const { error } = await supabase
         .from('admin_settings')
-        .insert({ user_id: userId, ...permissions });
+        .insert({
+          user_id: userId,
+          country_id: primaryCountryId,
+          ...permissions,
+        });
 
       if (error) throw error;
+
+      await syncAdminCountryAccess(userId, countryIds, primaryCountryId);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['admin-settings'] });
@@ -183,12 +353,31 @@ export function useCreateAdminSetting() {
   });
 }
 
-/* ── Delete admin_settings entry ── */
+/* ── Delete admin_settings entry (remove from admins only) ── */
 export function useDeleteAdminSetting() {
   const qc = useQueryClient();
 
   return useMutation({
-    mutationFn: async (settingId: string) => {
+    mutationFn: async ({
+      settingId,
+      userId,
+      userEmail,
+    }: {
+      settingId: string;
+      userId: string;
+      userEmail?: string | null;
+    }) => {
+      if (isSystemOwner(userEmail)) {
+        throw new Error('لا يمكن حذف مالك النظام مطلقًا');
+      }
+
+      const { error: accessDeleteError } = await supabase
+        .from('admin_country_access')
+        .delete()
+        .eq('user_id', userId);
+
+      if (accessDeleteError) throw accessDeleteError;
+
       const { error } = await supabase
         .from('admin_settings')
         .delete()
@@ -272,6 +461,8 @@ export interface NewAdminPayload {
   phone?: string;
   role: string;
   permissions: AdminPermissions;
+  country_ids: string[];
+  primary_country_id: string | null;
 }
 
 export function useCreateNewAdminUser() {

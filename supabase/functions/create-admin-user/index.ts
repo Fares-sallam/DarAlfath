@@ -3,39 +3,30 @@ import { corsHeaders } from '../_shared/cors.ts';
 
 const OWNER_EMAIL = 'faresalsaid780@gmail.com';
 
-const jsonResponse = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
+function jsonResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
     status,
     headers: {
       ...corsHeaders,
       'Content-Type': 'application/json',
     },
   });
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
-  console.log('[create-admin-user] OPTIONS preflight received');
-  return new Response(null, {
-    status: 204,
-    headers: corsHeaders,
-  });
-}
+    return new Response(null, {
+      status: 204,
+      headers: corsHeaders,
+    });
+  }
 
   try {
-    console.log('[create-admin-user] started');
-    console.log('[create-admin-user] method:', req.method);
-
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY');
     const supabaseServiceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
     if (!supabaseUrl || !supabaseAnonKey || !supabaseServiceRoleKey) {
-      console.error('[create-admin-user] missing environment variables', {
-        hasUrl: !!supabaseUrl,
-        hasAnon: !!supabaseAnonKey,
-        hasServiceRole: !!supabaseServiceRoleKey,
-      });
-
       return jsonResponse(
         {
           error: 'إعدادات Supabase غير مكتملة داخل Edge Function',
@@ -49,32 +40,22 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    /* ── Verify caller ── */
     const authHeader = req.headers.get('Authorization');
     const token = authHeader?.replace('Bearer ', '');
 
-    console.log('[create-admin-user] auth header exists:', !!authHeader);
-    console.log('[create-admin-user] token exists:', !!token);
-
     if (!token) {
-      return jsonResponse(
-        { error: 'غير مصرح: لا يوجد رمز مصادقة' },
-        401
-      );
+      return jsonResponse({ error: 'غير مصرح: لا يوجد رمز مصادقة' }, 401);
     }
 
     const supabaseAnon = createClient(supabaseUrl, supabaseAnonKey);
 
-    console.log('[create-admin-user] verifying caller token...');
     const {
       data: { user: caller },
       error: callerError,
     } = await supabaseAnon.auth.getUser(token);
 
-    console.log('[create-admin-user] caller fetched:', !!caller);
-
     if (callerError || !caller) {
-      console.error('[create-admin-user] caller verification failed:', callerError);
-
       return jsonResponse(
         {
           error: 'غير مصرح: رمز المصادقة غير صالح',
@@ -84,18 +65,14 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    console.log('[create-admin-user] caller email:', caller.email);
-
     if (caller.email?.toLowerCase() !== OWNER_EMAIL.toLowerCase()) {
-      console.warn('[create-admin-user] unauthorized owner check failed for:', caller.email);
-
       return jsonResponse(
         { error: 'غير مصرح: هذه العملية متاحة لمالك النظام فقط' },
         403
       );
     }
 
-    console.log('[create-admin-user] parsing request body...');
+    /* ── Parse body ── */
     const body = await req.json();
 
     const {
@@ -105,6 +82,8 @@ Deno.serve(async (req: Request) => {
       phone,
       role,
       permissions,
+      country_ids,
+      primary_country_id,
     } = body as {
       email: string;
       password: string;
@@ -112,15 +91,9 @@ Deno.serve(async (req: Request) => {
       phone?: string;
       role: string;
       permissions?: Record<string, boolean>;
+      country_ids?: string[];
+      primary_country_id?: string | null;
     };
-
-    console.log('[create-admin-user] body parsed', {
-      email,
-      full_name,
-      role,
-      hasPhone: !!phone,
-      hasPermissions: !!permissions,
-    });
 
     if (!email || !password || !full_name || !role) {
       return jsonResponse(
@@ -140,35 +113,45 @@ Deno.serve(async (req: Request) => {
     const trimmedFullName = full_name.trim();
     const trimmedPhone = phone?.trim() || null;
 
-    console.log('[create-admin-user] creating admin client...');
+    const uniqueCountryIds = Array.from(
+      new Set((country_ids ?? []).filter((id) => typeof id === 'string' && id.trim()))
+    );
+
+    if (uniqueCountryIds.length === 0) {
+      return jsonResponse(
+        { error: 'يجب اختيار دولة واحدة على الأقل للمشرف' },
+        400
+      );
+    }
+
+    const resolvedPrimaryCountryId =
+      primary_country_id && uniqueCountryIds.includes(primary_country_id)
+        ? primary_country_id
+        : uniqueCountryIds[0];
+
+    if (!resolvedPrimaryCountryId) {
+      return jsonResponse(
+        { error: 'يجب تحديد دولة أساسية صحيحة للمشرف' },
+        400
+      );
+    }
+
+    /* ── Admin client ── */
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRoleKey);
 
-    console.log('[create-admin-user] checking if user already exists in profiles...');
-    const { data: existingProfile, error: existingProfileError } = await supabaseAdmin
-      .from('profiles')
-      .select('id, full_name, role')
-      .eq('id', caller.id)
-      .maybeSingle();
-
-    console.log('[create-admin-user] owner profile check complete', {
-      foundOwnerProfile: !!existingProfile,
-      ownerProfileError: existingProfileError?.message || null,
-    });
-
-    console.log('[create-admin-user] creating auth user:', normalizedEmail);
-    const { data: newUserData, error: createError } = await supabaseAdmin.auth.admin.createUser({
-      email: normalizedEmail,
-      password,
-      email_confirm: true,
-      user_metadata: {
-        full_name: trimmedFullName,
-        has_password: true,
-      },
-    });
+    /* ── Step 1: Create Auth user ── */
+    const { data: newUserData, error: createError } =
+      await supabaseAdmin.auth.admin.createUser({
+        email: normalizedEmail,
+        password,
+        email_confirm: true,
+        user_metadata: {
+          full_name: trimmedFullName,
+          has_password: true,
+        },
+      });
 
     if (createError) {
-      console.error('[create-admin-user] createUser failed:', createError);
-
       return jsonResponse(
         { error: `فشل إنشاء المستخدم: ${createError.message}` },
         400
@@ -178,16 +161,13 @@ Deno.serve(async (req: Request) => {
     const newUser = newUserData.user;
 
     if (!newUser) {
-      console.error('[create-admin-user] createUser returned no user');
-
       return jsonResponse(
         { error: 'فشل إنشاء المستخدم: لم يتم إرجاع بيانات المستخدم' },
         500
       );
     }
 
-    console.log('[create-admin-user] auth user created:', newUser.id);
-
+    /* ── Step 2: Upsert profile ── */
     const profilePayload: Record<string, unknown> = {
       id: newUser.id,
       full_name: trimmedFullName,
@@ -199,28 +179,22 @@ Deno.serve(async (req: Request) => {
       profilePayload.phone = trimmedPhone;
     }
 
-    console.log('[create-admin-user] upserting profile...', profilePayload);
-
     const { error: profileError } = await supabaseAdmin
       .from('profiles')
       .upsert(profilePayload, { onConflict: 'id' });
 
     if (profileError) {
-      console.error('[create-admin-user] profile upsert failed:', profileError);
-
-      console.log('[create-admin-user] attempting fallback profile update...');
       const { error: fallbackProfileError } = await supabaseAdmin
         .from('profiles')
         .update({
           full_name: trimmedFullName,
           role,
           phone: trimmedPhone,
+          is_active: true,
         })
         .eq('id', newUser.id);
 
       if (fallbackProfileError) {
-        console.error('[create-admin-user] fallback profile update failed:', fallbackProfileError);
-
         return jsonResponse(
           {
             error: 'تم إنشاء المستخدم لكن فشل حفظ الملف الشخصي',
@@ -232,10 +206,10 @@ Deno.serve(async (req: Request) => {
       }
     }
 
-    console.log('[create-admin-user] profile created/updated successfully');
-
+    /* ── Step 3: Upsert admin_settings ── */
     const adminPayload = {
       user_id: newUser.id,
+      country_id: resolvedPrimaryCountryId,
       can_manage_products: permissions?.can_manage_products ?? false,
       can_manage_orders: permissions?.can_manage_orders ?? false,
       can_manage_users: permissions?.can_manage_users ?? false,
@@ -244,17 +218,14 @@ Deno.serve(async (req: Request) => {
       can_manage_shipping: permissions?.can_manage_shipping ?? false,
       can_view_analytics: permissions?.can_view_analytics ?? false,
       can_export: permissions?.can_export ?? false,
+      can_view_activity_log: permissions?.can_view_activity_log ?? false,
     };
-
-    console.log('[create-admin-user] upserting admin settings...', adminPayload);
 
     const { error: settingsError } = await supabaseAdmin
       .from('admin_settings')
       .upsert(adminPayload, { onConflict: 'user_id' });
 
     if (settingsError) {
-      console.error('[create-admin-user] admin_settings upsert failed:', settingsError);
-
       return jsonResponse(
         {
           error: 'تم إنشاء المستخدم والملف الشخصي لكن فشل حفظ صلاحيات المشرف',
@@ -265,23 +236,62 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    console.log('[create-admin-user] done successfully for:', normalizedEmail);
+    /* ── Step 4: Save multi-country access ── */
+    const { error: deleteAccessError } = await supabaseAdmin
+      .from('admin_country_access')
+      .delete()
+      .eq('user_id', newUser.id);
+
+    if (deleteAccessError) {
+      return jsonResponse(
+        {
+          error: 'تم إنشاء المستخدم لكن فشل تهيئة الدول المسموح بها',
+          details: deleteAccessError.message,
+          user_id: newUser.id,
+        },
+        500
+      );
+    }
+
+    const accessRows = uniqueCountryIds.map((countryId) => ({
+      user_id: newUser.id,
+      country_id: countryId,
+      is_primary: countryId === resolvedPrimaryCountryId,
+    }));
+
+    const { error: accessInsertError } = await supabaseAdmin
+      .from('admin_country_access')
+      .insert(accessRows);
+
+    if (accessInsertError) {
+      return jsonResponse(
+        {
+          error: 'تم إنشاء المستخدم لكن فشل حفظ الدول المسموح بها',
+          details: accessInsertError.message,
+          user_id: newUser.id,
+        },
+        500
+      );
+    }
 
     return jsonResponse(
       {
         success: true,
         user_id: newUser.id,
         email: newUser.email,
+        country_ids: uniqueCountryIds,
+        primary_country_id: resolvedPrimaryCountryId,
         message: `تم إنشاء حساب المشرف بنجاح: ${trimmedFullName}`,
       },
       200
     );
   } catch (error) {
-    console.error('[create-admin-user] fatal error:', error);
-
     return jsonResponse(
       {
-        error: error instanceof Error ? `خطأ غير متوقع: ${error.message}` : 'خطأ غير متوقع في الخادم',
+        error:
+          error instanceof Error
+            ? `خطأ غير متوقع: ${error.message}`
+            : 'خطأ غير متوقع في الخادم',
       },
       500
     );
