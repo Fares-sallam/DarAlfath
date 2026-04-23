@@ -1,6 +1,8 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
+import { useCountry } from '@/contexts/CountryContext';
+import { useAuth } from '@/contexts/AuthContext';
 
 /* ═══════════════════════════════════════════════
    Countries
@@ -31,36 +33,71 @@ export function useCountries() {
 
 export function useCreateCountry() {
   const qc = useQueryClient();
+
   return useMutation({
     mutationFn: async (input: Omit<Country, 'id' | 'created_at'>) => {
       const { error } = await supabase.from('countries').insert(input);
       if (error) throw error;
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['settings-countries'] }); toast.success('تمت إضافة الدولة'); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['settings-countries'] });
+      toast.success('تمت إضافة الدولة');
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 }
 
 export function useUpdateCountry() {
   const qc = useQueryClient();
+
   return useMutation({
     mutationFn: async ({ id, ...patch }: Partial<Country> & { id: string }) => {
       const { error } = await supabase.from('countries').update(patch).eq('id', id);
       if (error) throw error;
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['settings-countries'] }); toast.success('تم تحديث الدولة'); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['settings-countries'] });
+      qc.invalidateQueries({ queryKey: ['country'] });
+      qc.invalidateQueries({ queryKey: ['settings-payment-methods'] });
+      toast.success('تم تحديث الدولة');
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 }
 
 export function useDeleteCountry() {
   const qc = useQueryClient();
+  const { user } = useAuth();
+
   return useMutation({
     mutationFn: async (id: string) => {
+      if (!user?.isSystemOwner) {
+        throw new Error('فقط مالك النظام يمكنه حذف الدول');
+      }
+
+      const checks = await Promise.all([
+        supabase.from('orders').select('id', { count: 'exact', head: true }).eq('country_id', id),
+        supabase.from('product_inventory').select('id', { count: 'exact', head: true }).eq('country_id', id),
+        supabase.from('coupons').select('id', { count: 'exact', head: true }).eq('country_id', id),
+        supabase.from('payment_methods').select('id', { count: 'exact', head: true }).eq('country_id', id),
+        supabase.from('shipping_companies').select('id', { count: 'exact', head: true }).eq('country_id', id),
+        supabase.from('admin_country_access').select('id', { count: 'exact', head: true }).eq('country_id', id),
+      ]);
+
+      const counts = checks.map((r) => r.count ?? 0);
+      const totalRefs = counts.reduce((a, b) => a + b, 0);
+
+      if (totalRefs > 0) {
+        throw new Error('لا يمكن حذف الدولة لأنها مرتبطة ببيانات حالية. عطّلها أولًا أو احذف الارتباطات التابعة لها.');
+      }
+
       const { error } = await supabase.from('countries').delete().eq('id', id);
       if (error) throw error;
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['settings-countries'] }); toast.success('تم حذف الدولة'); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['settings-countries'] });
+      toast.success('تم حذف الدولة');
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 }
@@ -76,17 +113,25 @@ export interface PaymentMethod {
   is_active: boolean;
   config?: Record<string, unknown>;
   created_at: string;
-  countries?: { name: string } | null;
+  countries?: { id?: string; name: string } | null;
 }
 
 export function usePaymentMethods() {
+  const { selectedCountry } = useCountry();
+
   return useQuery({
-    queryKey: ['settings-payment-methods'],
+    queryKey: ['settings-payment-methods', selectedCountry?.id ?? 'all'],
     queryFn: async (): Promise<PaymentMethod[]> => {
-      const { data, error } = await supabase
+      let query = supabase
         .from('payment_methods')
-        .select('*, countries(name)')
+        .select('*, countries(id, name)')
         .order('method_name');
+
+      if (selectedCountry?.id) {
+        query = query.eq('country_id', selectedCountry.id);
+      }
+
+      const { data, error } = await query;
       if (error) throw error;
       return (data ?? []) as PaymentMethod[];
     },
@@ -95,36 +140,63 @@ export function usePaymentMethods() {
 
 export function useCreatePaymentMethod() {
   const qc = useQueryClient();
+  const { selectedCountry } = useCountry();
+
   return useMutation({
     mutationFn: async (input: { method_name: string; provider?: string; country_id?: string | null; is_active: boolean }) => {
-      const { error } = await supabase.from('payment_methods').insert(input);
+      const payload = {
+        method_name: input.method_name,
+        provider: input.provider || null,
+        country_id: input.country_id || selectedCountry?.id || null,
+        is_active: input.is_active,
+      };
+      const { error } = await supabase.from('payment_methods').insert(payload);
       if (error) throw error;
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['settings-payment-methods'] }); toast.success('تمت إضافة طريقة الدفع'); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['settings-payment-methods'] });
+      qc.invalidateQueries({ queryKey: ['payment-methods-shipping-page'] });
+      toast.success('تمت إضافة طريقة الدفع');
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 }
 
 export function useUpdatePaymentMethod() {
   const qc = useQueryClient();
+  const { selectedCountry } = useCountry();
+
   return useMutation({
     mutationFn: async ({ id, ...patch }: { id: string; method_name?: string; provider?: string | null; country_id?: string | null; is_active?: boolean }) => {
-      const { error } = await supabase.from('payment_methods').update(patch).eq('id', id);
+      const payload = {
+        ...patch,
+        country_id: patch.country_id ?? selectedCountry?.id ?? null,
+      };
+      const { error } = await supabase.from('payment_methods').update(payload).eq('id', id);
       if (error) throw error;
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['settings-payment-methods'] }); toast.success('تم تحديث طريقة الدفع'); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['settings-payment-methods'] });
+      qc.invalidateQueries({ queryKey: ['payment-methods-shipping-page'] });
+      toast.success('تم تحديث طريقة الدفع');
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 }
 
 export function useDeletePaymentMethod() {
   const qc = useQueryClient();
+
   return useMutation({
     mutationFn: async (id: string) => {
       const { error } = await supabase.from('payment_methods').delete().eq('id', id);
       if (error) throw error;
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['settings-payment-methods'] }); toast.success('تم حذف طريقة الدفع'); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['settings-payment-methods'] });
+      qc.invalidateQueries({ queryKey: ['payment-methods-shipping-page'] });
+      toast.success('تم حذف طريقة الدفع');
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 }
@@ -187,5 +259,127 @@ export function useDeleteCategory() {
     },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['settings-categories'] }); toast.success('تم حذف التصنيف'); },
     onError: (e: Error) => toast.error(e.message),
+  });
+}
+
+/* ═══════════════════════════════════════════════
+   Global Store Settings (singleton row)
+═══════════════════════════════════════════════ */
+
+export interface StoreSettingsInput {
+  store_name?: string;
+  store_description?: string;
+  store_email?: string;
+  store_phone?: string;
+  store_address?: string;
+  seo_title?: string;
+  seo_description?: string;
+  seo_keywords?: string;
+  notifications?: {
+    emailNewOrder?: boolean;
+    smsNewOrder?: boolean;
+    emailLowStock?: boolean;
+    pushNewOrder?: boolean;
+    emailReturn?: boolean;
+    smsShipping?: boolean;
+  };
+}
+
+export interface StoreSettings extends StoreSettingsInput {
+  id?: string;
+  updated_at?: string;
+}
+
+const DEFAULT_STORE_SETTINGS: StoreSettings = {
+  store_name: 'دار الفتح للنشر والتوزيع',
+  store_description: 'دار الفتح — متجر متخصص في بيع الكتب الورقية والرقمية بجودة عالية وتوصيل سريع',
+  store_email: 'info@darelfath.com',
+  store_phone: '',
+  store_address: '',
+  seo_title: 'دار الفتح — أفضل الكتب الورقية والرقمية',
+  seo_description: 'اكتشف مجموعة واسعة من الكتب الورقية والرقمية بأفضل الأسعار مع توصيل سريع.',
+  seo_keywords: 'كتب، مكتبة، روايات، تنمية بشرية، كتب رقمية، دار الفتح',
+  notifications: {
+    emailNewOrder: true,
+    smsNewOrder: true,
+    emailLowStock: true,
+    pushNewOrder: false,
+    emailReturn: true,
+    smsShipping: false,
+  },
+};
+
+export function useStoreSettings() {
+  return useQuery({
+    queryKey: ['store-settings'],
+    queryFn: async (): Promise<StoreSettings> => {
+      const { data, error } = await supabase
+        .from('store_settings')
+        .select('*')
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (error) throw error;
+
+      if (!data) return DEFAULT_STORE_SETTINGS;
+      return {
+        ...DEFAULT_STORE_SETTINGS,
+        ...(data as StoreSettings),
+        notifications: {
+          ...DEFAULT_STORE_SETTINGS.notifications,
+          ...((data as StoreSettings).notifications ?? {}),
+        },
+      };
+    },
+  });
+}
+
+export function useUpsertStoreSettings() {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (patch: StoreSettingsInput) => {
+      const { data: existing, error: existingErr } = await supabase
+        .from('store_settings')
+        .select('*')
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (existingErr) throw existingErr;
+
+      const merged = {
+        ...DEFAULT_STORE_SETTINGS,
+        ...(existing ?? {}),
+        ...patch,
+        notifications: {
+          ...DEFAULT_STORE_SETTINGS.notifications,
+          ...((existing as StoreSettings | null)?.notifications ?? {}),
+          ...(patch.notifications ?? {}),
+        },
+        updated_at: new Date().toISOString(),
+      };
+
+      if (existing?.id) {
+        const { error } = await supabase
+          .from('store_settings')
+          .update(merged)
+          .eq('id', existing.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('store_settings')
+          .insert(merged);
+        if (error) throw error;
+      }
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['store-settings'] });
+      toast.success('تم حفظ إعدادات المتجر بنجاح');
+    },
+    onError: (e: Error) => {
+      toast.error(e.message);
+    },
   });
 }

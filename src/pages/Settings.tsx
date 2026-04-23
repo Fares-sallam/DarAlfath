@@ -12,11 +12,13 @@ import { toast } from 'sonner';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLogo } from '@/contexts/LogoContext';
+import { useCountry } from '@/contexts/CountryContext';
 import {
   useCountries, useCreateCountry, useUpdateCountry, useDeleteCountry,
   usePaymentMethods, useCreatePaymentMethod, useUpdatePaymentMethod, useDeletePaymentMethod,
   useCategories, useCreateCategory, useUpdateCategory, useDeleteCategory,
-  type Country, type PaymentMethod, type Category,
+  useStoreSettings, useUpsertStoreSettings,
+  type Country, type PaymentMethod, type Category, type StoreSettingsInput,
 } from '@/hooks/useSettings';
 
 /* ── Sidebar sections — removed language/currency/theme ── */
@@ -87,6 +89,7 @@ function ConfirmDelete({ label, onConfirm, onCancel }: { label: string; onConfir
 /* ════════════════════════════════════════════════════════════
    Profile Section
 ════════════════════════════════════════════════════════════ */
+
 function ProfileSection() {
   const { user } = useAuth();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -96,6 +99,26 @@ function ProfileSection() {
   const [saving, setSaving] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState(user?.avatarUrl || '');
+
+  useEffect(() => {
+    let mounted = true;
+    if (!user?.id) return;
+
+    (async () => {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('full_name, phone, avatar_url')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      if (!mounted || error || !data) return;
+      setFullName(data.full_name ?? user.fullName ?? '');
+      setPhone(data.phone ?? '');
+      setAvatarUrl(data.avatar_url ?? user.avatarUrl ?? '');
+    })();
+
+    return () => { mounted = false; };
+  }, [user?.id, user?.fullName, user?.avatarUrl]);
 
   const roleLabels: Record<string, string> = {
     super_admin: 'مالك النظام',
@@ -120,6 +143,7 @@ function ProfileSection() {
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!fullName.trim()) { toast.error('الاسم مطلوب'); return; }
+    if (!user?.id) return;
     setSaving(true);
 
     const { error } = await supabase
@@ -129,7 +153,7 @@ function ProfileSection() {
         phone: phone.trim() || null,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', user!.id);
+      .eq('id', user.id);
 
     setSaving(false);
     if (error) { toast.error('فشل حفظ البيانات: ' + error.message); return; }
@@ -138,12 +162,12 @@ function ProfileSection() {
 
   const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || !user?.id) return;
     if (file.size > 2 * 1024 * 1024) { toast.error('حجم الصورة يجب أن يكون أقل من 2MB'); return; }
 
     setUploadingAvatar(true);
     const ext = file.name.split('.').pop();
-    const path = `avatars/${user!.id}.${ext}`;
+    const path = `avatars/${user.id}.${ext}`;
 
     const { error: uploadError } = await supabase.storage
       .from('book-covers')
@@ -160,7 +184,7 @@ function ProfileSection() {
     const { error: updateError } = await supabase
       .from('profiles')
       .update({ avatar_url: publicUrl })
-      .eq('id', user!.id);
+      .eq('id', user.id);
 
     setUploadingAvatar(false);
     if (updateError) { toast.error('فشل تحديث الصورة'); return; }
@@ -180,7 +204,6 @@ function ProfileSection() {
     <div className="space-y-6">
       <h3 className="font-bold text-gray-800 text-lg border-b border-gray-100 pb-3">الملف الشخصي</h3>
 
-      {/* Avatar */}
       <div className="flex items-center gap-5">
         <div className="relative flex-shrink-0">
           <div className="w-20 h-20 rounded-2xl overflow-hidden bg-[#0B1F4D] flex items-center justify-center shadow-md">
@@ -200,7 +223,7 @@ function ProfileSection() {
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleAvatarChange} />
         </div>
         <div>
-          <p className="font-bold text-gray-800 text-base">{user?.fullName || 'المستخدم'}</p>
+          <p className="font-bold text-gray-800 text-base">{fullName || user?.fullName || 'المستخدم'}</p>
           <p className="text-sm text-gray-500 mt-0.5" dir="ltr">{user?.email}</p>
           <span className={`inline-block mt-2 text-xs font-bold px-3 py-1 rounded-full ${roleColors[user?.role || 'user'] || 'bg-gray-100 text-gray-700'}`}>
             {roleLabels[user?.role || 'user'] || user?.role}
@@ -208,7 +231,6 @@ function ProfileSection() {
         </div>
       </div>
 
-      {/* Form */}
       <form onSubmit={handleSaveProfile} className="space-y-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
@@ -265,7 +287,6 @@ function ProfileSection() {
         </div>
       </form>
 
-      {/* Account info */}
       <div className="border border-gray-100 rounded-2xl p-4 bg-gray-50 space-y-2">
         <p className="text-xs font-bold text-gray-500 mb-3">معلومات الحساب</p>
         <div className="flex items-center justify-between text-sm">
@@ -284,6 +305,7 @@ function ProfileSection() {
     </div>
   );
 }
+
 
 /* ════════════════════════════════════════════════════════════
    Security / Change Password Section
@@ -557,15 +579,53 @@ function SecuritySection() {
 /* ════════════════════════════════════════════════════════════
    Store Settings Section (with real logo upload)
 ════════════════════════════════════════════════════════════ */
+
 function StoreSection() {
   const { logoUrl, uploading, uploadLogo, clearLogo } = useLogo();
+  const { data: settings, isLoading, isError } = useStoreSettings();
+  const upsertStore = useUpsertStoreSettings();
   const logoFileRef = useRef<HTMLInputElement>(null);
 
-  const [storeName, setStoreName] = useState('دار الفتح للنشر والتوزيع');
-  const [storeDesc, setStoreDesc] = useState('دار الفتح — متجر متخصص في بيع الكتب الورقية والرقمية بجودة عالية وتوصيل سريع لجميع محافظات مصر');
-  const [storeEmail, setStoreEmail] = useState('info@darelfath.com');
-  const [storePhone, setStorePhone] = useState('01010000000');
-  const [storeAddress, setStoreAddress] = useState('القاهرة، جمهورية مصر العربية');
+  const [form, setForm] = useState<StoreSettingsInput>({
+    store_name: '',
+    store_description: '',
+    store_email: '',
+    store_phone: '',
+    store_address: '',
+    seo_title: '',
+    seo_description: '',
+    seo_keywords: '',
+    notifications: {
+      emailNewOrder: true,
+      smsNewOrder: true,
+      emailLowStock: true,
+      pushNewOrder: false,
+      emailReturn: true,
+      smsShipping: false,
+    },
+  });
+
+  useEffect(() => {
+    if (!settings) return;
+    setForm({
+      store_name: settings.store_name ?? '',
+      store_description: settings.store_description ?? '',
+      store_email: settings.store_email ?? '',
+      store_phone: settings.store_phone ?? '',
+      store_address: settings.store_address ?? '',
+      seo_title: settings.seo_title ?? '',
+      seo_description: settings.seo_description ?? '',
+      seo_keywords: settings.seo_keywords ?? '',
+      notifications: settings.notifications ?? {
+        emailNewOrder: true,
+        smsNewOrder: true,
+        emailLowStock: true,
+        pushNewOrder: false,
+        emailReturn: true,
+        smsShipping: false,
+      },
+    });
+  }, [settings]);
 
   const handleLogoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -576,22 +636,32 @@ function StoreSection() {
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'فشل رفع الشعار');
     }
-    // Reset input so same file can be re-uploaded
     e.target.value = '';
   };
 
+  const handleSave = async () => {
+    await upsertStore.mutateAsync(form);
+  };
+
+  if (isLoading) {
+    return <div className="flex items-center justify-center py-16 gap-2 text-gray-400"><Loader2 size={20} className="animate-spin" /><span className="text-sm">جارٍ تحميل إعدادات المتجر...</span></div>;
+  }
+
+  if (isError) {
+    return <div className="flex items-center justify-center py-16 gap-2 text-red-400"><AlertCircle size={18} /><span className="text-sm">تعذّر تحميل إعدادات المتجر</span></div>;
+  }
+
   return (
     <div className="space-y-5">
-      <h3 className="font-bold text-gray-800 text-lg border-b border-gray-100 pb-3">إعدادات المتجر</h3>
+      <h3 className="font-bold text-gray-800 text-lg border-b border-gray-100 pb-3">إعدادات المتجر العامة</h3>
+      <p className="text-xs text-gray-400 -mt-2">هذه البيانات عامة لكل الدول والعملاء، وأي تغيير فيها ينعكس مباشرة على واجهة البيع.</p>
 
-      {/* Logo upload */}
       <div>
         <label className="block text-sm font-semibold text-gray-700 mb-3">
           <ImageIcon size={14} className="inline ml-1.5 text-gray-400" />
           شعار المتجر
         </label>
         <div className="flex items-center gap-5">
-          {/* Preview */}
           <div className="w-20 h-20 rounded-2xl bg-[#0B1F4D] flex items-center justify-center overflow-hidden shadow-md flex-shrink-0">
             {logoUrl
               ? <img src={logoUrl} alt="شعار المتجر" className="w-full h-full object-cover" />
@@ -599,7 +669,6 @@ function StoreSection() {
             }
           </div>
 
-          {/* Actions */}
           <div className="space-y-2">
             <button
               type="button"
@@ -607,10 +676,7 @@ function StoreSection() {
               disabled={uploading}
               className="flex items-center gap-2 px-4 py-2.5 border-2 border-dashed border-blue-300 bg-blue-50 rounded-xl text-sm text-blue-700 hover:border-blue-500 hover:bg-blue-100 transition-all disabled:opacity-50 font-semibold"
             >
-              {uploading
-                ? <Loader2 size={15} className="animate-spin" />
-                : <Upload size={15} />
-              }
+              {uploading ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
               {uploading ? 'جارٍ الرفع...' : 'رفع شعار جديد'}
             </button>
 
@@ -644,42 +710,170 @@ function StoreSection() {
           <label className="block text-sm font-semibold text-gray-700 mb-2">
             <Store size={14} className="inline ml-1.5 text-gray-400" />اسم المتجر
           </label>
-          <input value={storeName} onChange={e => setStoreName(e.target.value)} className="input-field" />
+          <input value={form.store_name} onChange={e => setForm(f => ({ ...f, store_name: e.target.value }))} className="input-field" />
         </div>
         <div>
           <label className="block text-sm font-semibold text-gray-700 mb-2">
             <Mail size={14} className="inline ml-1.5 text-gray-400" />البريد الإلكتروني
           </label>
-          <input type="email" value={storeEmail} onChange={e => setStoreEmail(e.target.value)} className="input-field" />
+          <input type="email" value={form.store_email} onChange={e => setForm(f => ({ ...f, store_email: e.target.value }))} className="input-field" />
         </div>
         <div>
           <label className="block text-sm font-semibold text-gray-700 mb-2">
             <Phone size={14} className="inline ml-1.5 text-gray-400" />رقم الهاتف
           </label>
-          <input value={storePhone} onChange={e => setStorePhone(e.target.value)} className="input-field" />
+          <input value={form.store_phone} onChange={e => setForm(f => ({ ...f, store_phone: e.target.value }))} className="input-field" />
         </div>
         <div>
           <label className="block text-sm font-semibold text-gray-700 mb-2">
             <MapPin size={14} className="inline ml-1.5 text-gray-400" />العنوان
           </label>
-          <input value={storeAddress} onChange={e => setStoreAddress(e.target.value)} className="input-field" />
+          <input value={form.store_address} onChange={e => setForm(f => ({ ...f, store_address: e.target.value }))} className="input-field" />
         </div>
       </div>
+
       <div>
         <label className="block text-sm font-semibold text-gray-700 mb-2">وصف المتجر</label>
-        <textarea value={storeDesc} onChange={e => setStoreDesc(e.target.value)} rows={3} className="input-field h-auto py-3 resize-none" />
+        <textarea value={form.store_description} onChange={e => setForm(f => ({ ...f, store_description: e.target.value }))} rows={3} className="input-field h-auto py-3 resize-none" />
       </div>
-      <button onClick={() => toast.success('تم حفظ إعدادات المتجر')} className="btn-primary flex items-center gap-2">
-        <Save size={15} />حفظ الإعدادات
+
+      <button onClick={handleSave} disabled={upsertStore.isPending} className="btn-primary flex items-center gap-2 disabled:opacity-60">
+        {upsertStore.isPending ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
+        {upsertStore.isPending ? 'جارٍ الحفظ...' : 'حفظ إعدادات المتجر'}
       </button>
     </div>
   );
 }
 
+function SeoSection() {
+  const { data: settings, isLoading, isError } = useStoreSettings();
+  const upsertStore = useUpsertStoreSettings();
+
+  const [seoTitle, setSeoTitle] = useState('');
+  const [seoDesc, setSeoDesc] = useState('');
+  const [seoKeywords, setSeoKeywords] = useState('');
+
+  useEffect(() => {
+    if (!settings) return;
+    setSeoTitle(settings.seo_title ?? '');
+    setSeoDesc(settings.seo_description ?? '');
+    setSeoKeywords(settings.seo_keywords ?? '');
+  }, [settings]);
+
+  const handleSave = async () => {
+    await upsertStore.mutateAsync({
+      seo_title: seoTitle,
+      seo_description: seoDesc,
+      seo_keywords: seoKeywords,
+    });
+  };
+
+  if (isLoading) return <div className="flex items-center justify-center py-12 gap-2 text-gray-400"><Loader2 size={20} className="animate-spin" /><span className="text-sm">جارٍ التحميل...</span></div>;
+  if (isError) return <div className="flex items-center justify-center py-12 gap-2 text-red-400"><AlertCircle size={18} /><span className="text-sm">تعذّر تحميل إعدادات SEO</span></div>;
+
+  return (
+    <div className="space-y-5">
+      <h3 className="font-bold text-gray-800 text-lg border-b border-gray-100 pb-3">إعدادات SEO</h3>
+      <div>
+        <label className="block text-sm font-semibold text-gray-700 mb-2">عنوان الصفحة (Meta Title)</label>
+        <input value={seoTitle} onChange={e => setSeoTitle(e.target.value)} className="input-field" />
+        <p className="text-xs text-gray-400 mt-1">{seoTitle.length}/60 حرف</p>
+      </div>
+      <div>
+        <label className="block text-sm font-semibold text-gray-700 mb-2">وصف الصفحة (Meta Description)</label>
+        <textarea value={seoDesc} onChange={e => setSeoDesc(e.target.value)} rows={3} className="input-field h-auto py-3 resize-none" />
+        <p className="text-xs text-gray-400 mt-1">{seoDesc.length}/160 حرف</p>
+      </div>
+      <div>
+        <label className="block text-sm font-semibold text-gray-700 mb-2">الكلمات المفتاحية</label>
+        <input value={seoKeywords} onChange={e => setSeoKeywords(e.target.value)} className="input-field" />
+      </div>
+      <div className="border border-gray-200 rounded-2xl p-4 bg-gray-50">
+        <p className="text-xs font-semibold text-gray-500 mb-2">معاينة في Google</p>
+        <p className="text-blue-700 text-base font-semibold">{seoTitle}</p>
+        <p className="text-xs text-green-700 mt-0.5">https://darelfath.vercel.app</p>
+        <p className="text-sm text-gray-600 mt-1">{seoDesc.slice(0, 160)}</p>
+      </div>
+      <button onClick={handleSave} disabled={upsertStore.isPending} className="btn-primary flex items-center gap-2 disabled:opacity-60">
+        {upsertStore.isPending ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
+        {upsertStore.isPending ? 'جارٍ الحفظ...' : 'حفظ'}
+      </button>
+    </div>
+  );
+}
+
+function NotificationsSection() {
+  const { data: settings, isLoading, isError } = useStoreSettings();
+  const upsertStore = useUpsertStoreSettings();
+
+  const [notifs, setNotifs] = useState({
+    emailNewOrder: true,
+    smsNewOrder: true,
+    emailLowStock: true,
+    pushNewOrder: false,
+    emailReturn: true,
+    smsShipping: false,
+  });
+
+  useEffect(() => {
+    if (settings?.notifications) {
+      setNotifs({
+        emailNewOrder: !!settings.notifications.emailNewOrder,
+        smsNewOrder: !!settings.notifications.smsNewOrder,
+        emailLowStock: !!settings.notifications.emailLowStock,
+        pushNewOrder: !!settings.notifications.pushNewOrder,
+        emailReturn: !!settings.notifications.emailReturn,
+        smsShipping: !!settings.notifications.smsShipping,
+      });
+    }
+  }, [settings]);
+
+  const handleSave = async () => {
+    await upsertStore.mutateAsync({ notifications: notifs });
+  };
+
+  if (isLoading) return <div className="flex items-center justify-center py-12 gap-2 text-gray-400"><Loader2 size={20} className="animate-spin" /><span className="text-sm">جارٍ التحميل...</span></div>;
+  if (isError) return <div className="flex items-center justify-center py-12 gap-2 text-red-400"><AlertCircle size={18} /><span className="text-sm">تعذّر تحميل إعدادات الإشعارات</span></div>;
+
+  return (
+    <div className="space-y-5">
+      <h3 className="font-bold text-gray-800 text-lg border-b border-gray-100 pb-3">إعدادات الإشعارات</h3>
+      <div className="space-y-3">
+        {[
+          { key: 'emailNewOrder', label: 'بريد — طلب جديد', desc: 'إرسال إيميل عند ورود طلب جديد' },
+          { key: 'smsNewOrder', label: 'رسالة نصية — طلب جديد', desc: 'إرسال SMS عند ورود طلب جديد' },
+          { key: 'emailLowStock', label: 'بريد — نفاد المخزون', desc: 'تنبيه عند انخفاض كمية كتاب' },
+          { key: 'pushNewOrder', label: 'إشعار Push — طلب جديد', desc: 'إشعار فوري في المتصفح' },
+          { key: 'emailReturn', label: 'بريد — طلب مرتجع', desc: 'إيميل عند طلب استرجاع' },
+          { key: 'smsShipping', label: 'رسالة نصية — تحديث الشحن', desc: 'SMS للعميل عند شحن الطلب' },
+        ].map(item => (
+          <div key={item.key} className="flex items-center justify-between p-4 bg-gray-50 rounded-xl">
+            <div>
+              <p className="text-sm font-semibold text-gray-800">{item.label}</p>
+              <p className="text-xs text-gray-500 mt-0.5">{item.desc}</p>
+            </div>
+            <ToggleSwitch
+              value={notifs[item.key as keyof typeof notifs]}
+              onChange={() => setNotifs(n => ({ ...n, [item.key]: !n[item.key as keyof typeof n] }))}
+            />
+          </div>
+        ))}
+      </div>
+      <button onClick={handleSave} disabled={upsertStore.isPending} className="btn-primary flex items-center gap-2 disabled:opacity-60">
+        {upsertStore.isPending ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />}
+        {upsertStore.isPending ? 'جارٍ الحفظ...' : 'حفظ'}
+      </button>
+    </div>
+  );
+}
+
+
 /* ════════════════════════════════════════════════════════════
    Countries Section
 ════════════════════════════════════════════════════════════ */
+
 function CountriesSection() {
+  const { user } = useAuth();
   const { data: countries = [], isLoading, isError } = useCountries();
   const createMutation = useCreateCountry();
   const updateMutation = useUpdateCountry();
@@ -703,71 +897,55 @@ function CountriesSection() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.name || !form.code) return;
-    if (editing) {
-      await updateMutation.mutateAsync({ id: editing.id, ...form });
-    } else {
-      await createMutation.mutateAsync(form);
-    }
+    if (editing) await updateMutation.mutateAsync({ id: editing.id, ...form });
+    else await createMutation.mutateAsync(form);
     closeForm();
   };
 
   const isPending = createMutation.isPending || updateMutation.isPending;
+  const canDeleteCountries = !!user?.isSystemOwner;
 
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between border-b border-gray-100 pb-3">
         <div>
           <h3 className="font-bold text-gray-800 text-lg">الدول النشطة</h3>
-          <p className="text-xs text-gray-400 mt-0.5">إدارة الدول المدعومة وعملاتها</p>
+          <p className="text-xs text-gray-400 mt-0.5">إدارة الدول والعملات. الحذف متاح لمالك النظام فقط وبعد إزالة الارتباطات.</p>
         </div>
         <button onClick={openAdd} className="btn-primary flex items-center gap-1.5 text-sm">
           <Plus size={14} /> إضافة دولة
         </button>
       </div>
 
-      {isLoading && (
-        <div className="flex items-center justify-center py-12 gap-2 text-gray-400">
-          <Loader2 size={20} className="animate-spin" /><span className="text-sm">جارٍ التحميل...</span>
-        </div>
-      )}
-      {isError && (
-        <div className="flex items-center justify-center py-12 gap-2 text-red-400">
-          <AlertCircle size={18} /><span className="text-sm">تعذّر تحميل الدول</span>
-        </div>
-      )}
+      {isLoading && <div className="flex items-center justify-center py-12 gap-2 text-gray-400"><Loader2 size={20} className="animate-spin" /><span className="text-sm">جارٍ التحميل...</span></div>}
+      {isError && <div className="flex items-center justify-center py-12 gap-2 text-red-400"><AlertCircle size={18} /><span className="text-sm">تعذّر تحميل الدول</span></div>}
 
       {!isLoading && !isError && (
         <div className="space-y-3">
           {countries.map(country => (
-            <div key={country.id}
-              className={`flex items-center justify-between p-4 rounded-2xl border-2 transition-all ${
-                country.is_active ? 'border-green-100 bg-green-50/30' : 'border-gray-100 bg-gray-50/30'
-              }`}
-            >
-              <div className="flex items-center gap-4">
-                <div className="w-10 h-10 rounded-xl bg-white shadow-sm flex items-center justify-center">
-                  <span className="text-lg font-bold text-gray-600">{country.code}</span>
+            <div key={country.id} className={`flex items-center justify-between p-4 rounded-2xl border-2 transition-all ${country.is_active ? 'border-blue-100 bg-blue-50/20' : 'border-gray-100 bg-gray-50/20'}`}>
+              <div className="flex items-center gap-3">
+                <div className={`w-11 h-11 rounded-2xl flex items-center justify-center font-black ${country.is_active ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}>
+                  {country.code}
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
                     <p className="font-bold text-gray-800">{country.name}</p>
-                    {country.is_active
-                      ? <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-semibold">نشط</span>
-                      : <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full font-semibold">معطّل</span>
-                    }
+                    {country.is_active && <CheckCircle size={13} className="text-green-600" />}
                   </div>
-                  <p className="text-xs text-gray-500 mt-0.5">{country.currency} · {country.currency_symbol}</p>
+                  <p className="text-xs text-gray-400" dir="ltr">{country.currency} · {country.currency_symbol}</p>
                 </div>
               </div>
+
               <div className="flex items-center gap-2">
-                <ToggleSwitch
-                  value={country.is_active}
-                  onChange={() => updateMutation.mutate({ id: country.id, is_active: !country.is_active })}
-                />
-                <button onClick={() => openEdit(country)} className="p-2 rounded-xl hover:bg-blue-50 text-blue-600 transition-colors">
-                  <Pencil size={14} />
-                </button>
-                <button onClick={() => setDeleteTarget(country)} className="p-2 rounded-xl hover:bg-red-50 text-red-500 transition-colors">
+                <ToggleSwitch value={country.is_active} onChange={() => updateMutation.mutate({ id: country.id, is_active: !country.is_active })} />
+                <button onClick={() => openEdit(country)} className="p-2 rounded-xl hover:bg-blue-50 text-blue-600 transition-colors"><Pencil size={14} /></button>
+                <button
+                  disabled={!canDeleteCountries}
+                  onClick={() => canDeleteCountries && setDeleteTarget(country)}
+                  className="p-2 rounded-xl hover:bg-red-50 text-red-500 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                  title={canDeleteCountries ? 'حذف الدولة' : 'فقط مالك النظام يمكنه حذف الدول'}
+                >
                   <Trash2 size={14} />
                 </button>
               </div>
@@ -839,12 +1017,14 @@ function CountriesSection() {
   );
 }
 
+
 /* ════════════════════════════════════════════════════════════
    Payment Methods Section
 ════════════════════════════════════════════════════════════ */
+
 function PaymentMethodsSection() {
+  const { selectedCountry } = useCountry();
   const { data: methods = [], isLoading, isError } = usePaymentMethods();
-  const { data: countries = [] } = useCountries();
   const createMutation = useCreatePaymentMethod();
   const updateMutation = useUpdatePaymentMethod();
   const deleteMutation = useDeletePaymentMethod();
@@ -853,12 +1033,28 @@ function PaymentMethodsSection() {
   const [editing, setEditing] = useState<PaymentMethod | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<PaymentMethod | null>(null);
 
-  const emptyForm = { method_name: '', provider: '', country_id: '' as string | null, is_active: true };
+  const emptyForm = { method_name: '', provider: '', country_id: (selectedCountry?.id ?? '') as string | null, is_active: true };
   const [form, setForm] = useState(emptyForm);
 
-  const openAdd = () => { setForm(emptyForm); setEditing(null); setShowForm(true); };
+  useEffect(() => {
+    if (!editing) {
+      setForm(f => ({ ...f, country_id: selectedCountry?.id ?? '' }));
+    }
+  }, [selectedCountry?.id, editing]);
+
+  const openAdd = () => {
+    setForm({ ...emptyForm, country_id: selectedCountry?.id ?? '' });
+    setEditing(null);
+    setShowForm(true);
+  };
+
   const openEdit = (m: PaymentMethod) => {
-    setForm({ method_name: m.method_name, provider: m.provider ?? '', country_id: m.country_id ?? null, is_active: m.is_active });
+    setForm({
+      method_name: m.method_name,
+      provider: m.provider ?? '',
+      country_id: m.country_id ?? selectedCountry?.id ?? null,
+      is_active: m.is_active,
+    });
     setEditing(m);
     setShowForm(true);
   };
@@ -868,22 +1064,22 @@ function PaymentMethodsSection() {
     const payload = {
       method_name: form.method_name,
       provider: form.provider || undefined,
-      country_id: form.country_id || null,
+      country_id: form.country_id || selectedCountry?.id || null,
       is_active: form.is_active,
     };
-    if (editing) {
-      await updateMutation.mutateAsync({ id: editing.id, ...payload });
-    } else {
-      await createMutation.mutateAsync(payload);
-    }
-    setShowForm(false); setEditing(null);
+
+    if (editing) await updateMutation.mutateAsync({ id: editing.id, ...payload });
+    else await createMutation.mutateAsync(payload);
+
+    setShowForm(false);
+    setEditing(null);
   };
 
   const isPending = createMutation.isPending || updateMutation.isPending;
 
   const LOGOS: Record<string, string> = {
     fawry: '💳', instapay: '⚡', vodafone: '📱', paymob: '🟢',
-    stripe: '💳', accept: '✅', cash: '💵', bank: '🏦', wallet: '👛',
+    stripe: '💳', accept: '✅', cash: '💵', bank: '🏦', wallet: '👛', mada: '💠',
   };
 
   return (
@@ -891,12 +1087,21 @@ function PaymentMethodsSection() {
       <div className="flex items-center justify-between border-b border-gray-100 pb-3">
         <div>
           <h3 className="font-bold text-gray-800 text-lg">طرق الدفع</h3>
-          <p className="text-xs text-gray-400 mt-0.5">إدارة طرق الدفع المتاحة في المتجر</p>
+          <p className="text-xs text-gray-400 mt-0.5">
+            {selectedCountry ? `طرق الدفع الخاصة بـ ${selectedCountry.name}` : 'إدارة طرق الدفع المتاحة'}
+          </p>
         </div>
         <button onClick={openAdd} className="btn-primary flex items-center gap-1.5 text-sm">
           <Plus size={14} /> إضافة طريقة دفع
         </button>
       </div>
+
+      {selectedCountry && (
+        <div className="text-xs font-semibold px-3 py-2 rounded-xl bg-blue-50 text-blue-700 inline-flex items-center gap-1.5">
+          <Globe2 size={12} />
+          الدولة الحالية: {selectedCountry.name}
+        </div>
+      )}
 
       {isLoading && <div className="flex items-center justify-center py-12 gap-2 text-gray-400"><Loader2 size={20} className="animate-spin" /><span className="text-sm">جارٍ التحميل...</span></div>}
       {isError && <div className="flex items-center justify-center py-12 gap-2 text-red-400"><AlertCircle size={18} /><span className="text-sm">تعذّر تحميل طرق الدفع</span></div>}
@@ -916,7 +1121,7 @@ function PaymentMethodsSection() {
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
                       {m.provider && <span className="text-xs text-blue-600 font-semibold">{m.provider}</span>}
-                      {(m as PaymentMethod & { countries?: { name: string } }).countries?.name && <span className="text-xs text-gray-400">· {(m as PaymentMethod & { countries?: { name: string } }).countries?.name}</span>}
+                      {m.countries?.name && <span className="text-xs text-gray-400">· {m.countries.name}</span>}
                     </div>
                   </div>
                 </div>
@@ -928,7 +1133,7 @@ function PaymentMethodsSection() {
               </div>
             );
           })}
-          {methods.length === 0 && <div className="text-center py-12 text-gray-400"><Wallet size={32} className="text-gray-200 mx-auto mb-2" /><p className="text-sm">لا توجد طرق دفع مضافة بعد</p></div>}
+          {methods.length === 0 && <div className="text-center py-12 text-gray-400"><Wallet size={32} className="text-gray-200 mx-auto mb-2" /><p className="text-sm">لا توجد طرق دفع مضافة لهذه الدولة بعد</p></div>}
         </div>
       )}
 
@@ -943,21 +1148,18 @@ function PaymentMethodsSection() {
               <div>
                 <label className="block text-xs font-semibold text-gray-600 mb-1.5">اسم طريقة الدفع</label>
                 <input value={form.method_name} onChange={e => setForm(f => ({ ...f, method_name: e.target.value }))}
-                  placeholder="مثل: فوري، InstaPay، كاش" required className="input-field text-sm py-2 h-auto" />
+                  placeholder="مثل: Mada، Visa، Mastercard، كاش" required className="input-field text-sm py-2 h-auto" />
               </div>
               <div>
                 <label className="block text-xs font-semibold text-gray-600 mb-1.5">المزوّد (اختياري)</label>
                 <input value={form.provider} onChange={e => setForm(f => ({ ...f, provider: e.target.value }))}
-                  placeholder="مثل: Fawry, Paymob" className="input-field text-sm py-2 h-auto" dir="ltr" />
+                  placeholder="مثل: Paymob, HyperPay, Stripe" className="input-field text-sm py-2 h-auto" dir="ltr" />
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-600 mb-1.5">الدولة (اختياري)</label>
-                <select value={form.country_id ?? ''} onChange={e => setForm(f => ({ ...f, country_id: e.target.value || null }))}
-                  className="input-field text-sm py-2 h-auto">
-                  <option value="">كل الدول</option>
-                  {countries.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
+
+              <div className="p-3 bg-gray-50 rounded-xl text-sm text-gray-600">
+                الدولة المرتبطة: <span className="font-bold text-gray-800">{selectedCountry?.name ?? 'غير محددة'}</span>
               </div>
+
               <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl">
                 <span className="text-sm font-semibold text-gray-700">نشط</span>
                 <ToggleSwitch value={form.is_active} onChange={() => setForm(f => ({ ...f, is_active: !f.is_active }))} />
@@ -984,6 +1186,7 @@ function PaymentMethodsSection() {
     </div>
   );
 }
+
 
 /* ════════════════════════════════════════════════════════════
    Categories Section
@@ -1118,23 +1321,6 @@ export default function Settings() {
     if (sec) setActiveSection(sec);
   }, [location.state]);
 
-  // Store
-  const [storeName, setStoreName] = useState('دار الفتح للنشر والتوزيع');
-  const [storeDesc, setStoreDesc] = useState('دار الفتح — متجر متخصص في بيع الكتب الورقية والرقمية بجودة عالية وتوصيل سريع لجميع محافظات مصر');
-  const [storeEmail, setStoreEmail] = useState('info@darelfath.com');
-  const [storePhone, setStorePhone] = useState('01010000000');
-  const [storeAddress, setStoreAddress] = useState('القاهرة، جمهورية مصر العربية');
-
-  // SEO
-  const [seoTitle, setSeoTitle] = useState('دار الفتح — أفضل الكتب الورقية والرقمية في مصر');
-  const [seoDesc, setSeoDesc] = useState('اكتشف مجموعة واسعة من الكتب الورقية والرقمية بأفضل الأسعار مع توصيل سريع لجميع محافظات مصر.');
-  const [seoKeywords, setSeoKeywords] = useState('كتب، مكتبة، روايات، تنمية بشرية، كتب رقمية، دار الفتح');
-
-  // Notifications
-  const [notifs, setNotifs] = useState({
-    emailNewOrder: true, smsNewOrder: true, emailLowStock: true,
-    pushNewOrder: false, emailReturn: true, smsShipping: false,
-  });
 
   return (
     <Layout>
@@ -1179,68 +1365,9 @@ export default function Settings() {
             {activeSection === 'payment'   && <PaymentMethodsSection />}
             {activeSection === 'categories'&& <CategoriesSection />}
 
-            {activeSection === 'store' && (
-              <StoreSection />
-            )}
-
-            {activeSection === 'seo' && (
-              <div className="space-y-5">
-                <h3 className="font-bold text-gray-800 text-lg border-b border-gray-100 pb-3">إعدادات SEO</h3>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">عنوان الصفحة (Meta Title)</label>
-                  <input value={seoTitle} onChange={e => setSeoTitle(e.target.value)} className="input-field" />
-                  <p className="text-xs text-gray-400 mt-1">{seoTitle.length}/60 حرف</p>
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">وصف الصفحة (Meta Description)</label>
-                  <textarea value={seoDesc} onChange={e => setSeoDesc(e.target.value)} rows={3} className="input-field h-auto py-3 resize-none" />
-                  <p className="text-xs text-gray-400 mt-1">{seoDesc.length}/160 حرف</p>
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">الكلمات المفتاحية</label>
-                  <input value={seoKeywords} onChange={e => setSeoKeywords(e.target.value)} className="input-field" />
-                </div>
-                <div className="border border-gray-200 rounded-2xl p-4 bg-gray-50">
-                  <p className="text-xs font-semibold text-gray-500 mb-2">معاينة في Google</p>
-                  <p className="text-blue-700 text-base font-semibold">{seoTitle}</p>
-                  <p className="text-xs text-green-700 mt-0.5">https://darelfath.onspace.app</p>
-                  <p className="text-sm text-gray-600 mt-1">{seoDesc.slice(0, 160)}</p>
-                </div>
-                <button onClick={() => toast.success('تم حفظ إعدادات SEO')} className="btn-primary flex items-center gap-2">
-                  <Save size={15} />حفظ
-                </button>
-              </div>
-            )}
-
-            {activeSection === 'notifications' && (
-              <div className="space-y-5">
-                <h3 className="font-bold text-gray-800 text-lg border-b border-gray-100 pb-3">إعدادات الإشعارات</h3>
-                <div className="space-y-3">
-                  {[
-                    { key: 'emailNewOrder', label: 'بريد — طلب جديد', desc: 'إرسال إيميل عند ورود طلب جديد' },
-                    { key: 'smsNewOrder', label: 'رسالة نصية — طلب جديد', desc: 'إرسال SMS عند ورود طلب جديد' },
-                    { key: 'emailLowStock', label: 'بريد — نفاد المخزون', desc: 'تنبيه عند انخفاض كمية كتاب' },
-                    { key: 'pushNewOrder', label: 'إشعار Push — طلب جديد', desc: 'إشعار فوري في المتصفح' },
-                    { key: 'emailReturn', label: 'بريد — طلب مرتجع', desc: 'إيميل عند طلب استرجاع' },
-                    { key: 'smsShipping', label: 'رسالة نصية — تحديث الشحن', desc: 'SMS للعميل عند شحن الطلب' },
-                  ].map(item => (
-                    <div key={item.key} className="flex items-center justify-between p-4 bg-gray-50 rounded-xl">
-                      <div>
-                        <p className="text-sm font-semibold text-gray-800">{item.label}</p>
-                        <p className="text-xs text-gray-500 mt-0.5">{item.desc}</p>
-                      </div>
-                      <ToggleSwitch
-                        value={notifs[item.key as keyof typeof notifs]}
-                        onChange={() => setNotifs(n => ({ ...n, [item.key]: !n[item.key as keyof typeof n] }))}
-                      />
-                    </div>
-                  ))}
-                </div>
-                <button onClick={() => toast.success('تم حفظ إعدادات الإشعارات')} className="btn-primary flex items-center gap-2">
-                  <Save size={15} />حفظ
-                </button>
-              </div>
-            )}
+            {activeSection === 'store' && <StoreSection />}
+            {activeSection === 'seo' && <SeoSection />}
+            {activeSection === 'notifications' && <NotificationsSection />}
 
           </div>
         </div>
