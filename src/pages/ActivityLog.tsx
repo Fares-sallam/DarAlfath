@@ -2,16 +2,16 @@ import { useState } from 'react';
 import Layout from '@/components/layout/Layout';
 import {
   Plus, Edit, Trash2, LogIn, LogOut, Filter, Download,
-  Search, User, Calendar, RefreshCw, Loader2, AlertCircle,
+  Search, Calendar, RefreshCw, Loader2, AlertCircle,
   ChevronDown, ChevronRight, Database, X, FileText,
-  ArrowUpRight, ArrowDownRight
+  ArrowUpRight, ArrowDownRight, Globe2
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/lib/supabase';
 import { useQueryClient } from '@tanstack/react-query';
+import { useCountry } from '@/contexts/CountryContext';
 
-/* ── Types ── */
 interface AuditLog {
   id: string;
   user_id?: string | null;
@@ -25,37 +25,37 @@ interface AuditLog {
   profiles?: { full_name?: string | null; avatar_url?: string | null; role?: string } | null;
 }
 
-/* ── Config ── */
 const actionConfig: Record<string, { cls: string; dotCls: string; label: string; icon: React.ReactNode }> = {
   INSERT: { cls: 'bg-green-100 text-green-700', dotCls: 'bg-green-500', label: 'إضافة', icon: <Plus size={12} /> },
   UPDATE: { cls: 'bg-amber-100 text-amber-700', dotCls: 'bg-amber-500', label: 'تعديل', icon: <Edit size={12} /> },
-  DELETE: { cls: 'bg-red-100 text-red-600',    dotCls: 'bg-red-500',   label: 'حذف',   icon: <Trash2 size={12} /> },
-  LOGIN:  { cls: 'bg-blue-100 text-blue-700',  dotCls: 'bg-blue-500',  label: 'دخول',  icon: <LogIn size={12} /> },
-  LOGOUT: { cls: 'bg-gray-100 text-gray-600',  dotCls: 'bg-gray-400',  label: 'خروج',  icon: <LogOut size={12} /> },
+  DELETE: { cls: 'bg-red-100 text-red-600', dotCls: 'bg-red-500', label: 'حذف', icon: <Trash2 size={12} /> },
+  LOGIN: { cls: 'bg-blue-100 text-blue-700', dotCls: 'bg-blue-500', label: 'دخول', icon: <LogIn size={12} /> },
+  LOGOUT: { cls: 'bg-gray-100 text-gray-600', dotCls: 'bg-gray-400', label: 'خروج', icon: <LogOut size={12} /> },
 };
 
 const tableLabels: Record<string, string> = {
-  products:          'الكتب',
-  orders:            'الطلبات',
-  profiles:          'المستخدمين',
-  coupons:           'الكوبونات',
-  categories:        'التصنيفات',
-  book_series:       'السلاسل',
+  products: 'الكتب',
+  orders: 'الطلبات',
+  profiles: 'المستخدمين',
+  coupons: 'الكوبونات',
+  categories: 'التصنيفات',
+  book_series: 'السلاسل',
   product_inventory: 'المخزون',
-  shipping_companies:'شركات الشحن',
-  payment_methods:   'طرق الدفع',
-  countries:         'الدول',
-  admin_settings:    'إعدادات المشرفين',
-  electronic_books:  'الكتب الإلكترونية',
-  ebook_purchases:   'مشتريات الكتب',
-  order_items:       'عناصر الطلبات',
-  product_prices:    'أسعار المنتجات',
-  product_variants:  'نسخ المنتجات',
+  shipping_companies: 'شركات الشحن',
+  payment_methods: 'طرق الدفع',
+  countries: 'الدول',
+  admin_settings: 'إعدادات المشرفين',
+  store_settings: 'إعدادات المتجر',
+  electronic_books: 'الكتب الإلكترونية',
+  ebook_purchases: 'مشتريات الكتب',
+  order_items: 'عناصر الطلبات',
+  product_prices: 'أسعار المنتجات',
+  product_variants: 'نسخ المنتجات',
 };
 
 const ALL_ACTIONS = ['INSERT', 'UPDATE', 'DELETE', 'LOGIN', 'LOGOUT'];
+const GLOBAL_TABLES = new Set(['products', 'book_series', 'categories', 'store_settings']);
 
-/* ── Hook ── */
 interface LogFilters {
   action?: string;
   tableName?: string;
@@ -71,8 +71,15 @@ function useAuditLogs(filters: LogFilters) {
       let query = supabase
         .from('audit_logs')
         .select(`
-          id, user_id, action, table_name, record_id,
-          old_data, new_data, ip_address, created_at,
+          id,
+          user_id,
+          action,
+          table_name,
+          record_id,
+          old_data,
+          new_data,
+          ip_address,
+          created_at,
           profiles(full_name, avatar_url, role)
         `)
         .order('created_at', { ascending: false })
@@ -98,46 +105,86 @@ function useAuditLogs(filters: LogFilters) {
 
       const { data, error } = await query;
       if (error) throw error;
+
       return (data ?? []) as AuditLog[];
     },
   });
 }
 
-/* ── Helpers ── */
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('ar-EG', {
-    year: 'numeric', month: 'short', day: 'numeric'
-  });
-}
-function formatTime(iso: string) {
-  return new Date(iso).toLocaleTimeString('ar-EG', {
-    hour: '2-digit', minute: '2-digit', second: '2-digit'
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
   });
 }
 
+function formatTime(iso: string) {
+  return new Date(iso).toLocaleTimeString('ar-EG', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function getPayloadCountryId(payload?: Record<string, unknown> | null): string | null {
+  if (!payload) return null;
+  const val = payload.country_id;
+  return typeof val === 'string' ? val : null;
+}
+
+function getPayloadId(payload?: Record<string, unknown> | null): string | null {
+  if (!payload) return null;
+  const val = payload.id;
+  return typeof val === 'string' ? val : null;
+}
+
+function logMatchesSelectedCountry(log: AuditLog, selectedCountryId?: string | null) {
+  if (!selectedCountryId) return true;
+
+  const table = log.table_name ?? '';
+
+  if (GLOBAL_TABLES.has(table)) return true;
+
+  if (table === 'countries') {
+    const ids = [
+      log.record_id ?? null,
+      getPayloadId(log.old_data),
+      getPayloadId(log.new_data),
+    ].filter(Boolean);
+    return ids.includes(selectedCountryId);
+  }
+
+  const oldCountryId = getPayloadCountryId(log.old_data);
+  const newCountryId = getPayloadCountryId(log.new_data);
+
+  if (oldCountryId || newCountryId) {
+    return oldCountryId === selectedCountryId || newCountryId === selectedCountryId;
+  }
+
+  return true;
+}
+
 function DataDiff({
-  oldData, newData
+  oldData,
+  newData,
 }: {
   oldData?: Record<string, unknown> | null;
   newData?: Record<string, unknown> | null;
 }) {
   if (!oldData && !newData) return null;
 
-  // Collect all keys
-  const allKeys = new Set([
-    ...Object.keys(oldData ?? {}),
-    ...Object.keys(newData ?? {}),
-  ]);
-
-  // Only show changed keys for UPDATE
+  const allKeys = new Set([...Object.keys(oldData ?? {}), ...Object.keys(newData ?? {})]);
   const isUpdate = !!oldData && !!newData;
   const relevantKeys = isUpdate
-    ? [...allKeys].filter(k => JSON.stringify((oldData ?? {})[k]) !== JSON.stringify((newData ?? {})[k]))
+    ? [...allKeys].filter(
+        (k) => JSON.stringify((oldData ?? {})[k]) !== JSON.stringify((newData ?? {})[k])
+      )
     : [...allKeys];
 
-  if (relevantKeys.length === 0) return (
-    <p className="text-xs text-gray-400 py-2">لا توجد تغييرات</p>
-  );
+  if (relevantKeys.length === 0) {
+    return <p className="text-xs text-gray-400 py-2">لا توجد تغييرات</p>;
+  }
 
   const renderValue = (val: unknown): string => {
     if (val === null || val === undefined) return '—';
@@ -148,9 +195,10 @@ function DataDiff({
 
   return (
     <div className="mt-3 space-y-1.5 max-h-48 overflow-y-auto">
-      {relevantKeys.slice(0, 20).map(key => {
+      {relevantKeys.slice(0, 20).map((key) => {
         const oldVal = renderValue((oldData ?? {})[key]);
         const newVal = renderValue((newData ?? {})[key]);
+
         return (
           <div key={key} className="grid grid-cols-[120px_1fr] gap-2 items-start">
             <span className="text-xs font-mono text-gray-500 font-semibold truncate">{key}</span>
@@ -178,13 +226,16 @@ function DataDiff({
   );
 }
 
-/* ── Log Row ── */
 function LogRow({ log }: { log: AuditLog }) {
   const [expanded, setExpanded] = useState(false);
 
   const ac = actionConfig[log.action] ?? {
-    cls: 'bg-gray-100 text-gray-600', dotCls: 'bg-gray-400', label: log.action, icon: <FileText size={12} />
+    cls: 'bg-gray-100 text-gray-600',
+    dotCls: 'bg-gray-400',
+    label: log.action,
+    icon: <FileText size={12} />,
   };
+
   const tableName = tableLabels[log.table_name ?? ''] ?? log.table_name ?? '—';
   const userName = log.profiles?.full_name ?? 'النظام';
   const hasData = !!(log.old_data || log.new_data);
@@ -192,64 +243,63 @@ function LogRow({ log }: { log: AuditLog }) {
   return (
     <>
       <tr className="table-row">
-        {/* Action */}
         <td className="px-4 py-3">
           <span className={`inline-flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-xl ${ac.cls}`}>
             {ac.icon} {ac.label}
           </span>
         </td>
 
-        {/* User */}
         <td className="px-4 py-3">
           <div className="flex items-center gap-2">
             {log.profiles?.avatar_url ? (
-              <img src={log.profiles.avatar_url} alt={userName}
-                className="w-7 h-7 rounded-full object-cover flex-shrink-0" />
+              <img
+                src={log.profiles.avatar_url}
+                alt={userName}
+                className="w-7 h-7 rounded-full object-cover flex-shrink-0"
+              />
             ) : (
               <div className="w-7 h-7 rounded-full bg-indigo-100 flex items-center justify-center flex-shrink-0">
                 <span className="text-indigo-700 font-bold text-xs">{userName.charAt(0)}</span>
               </div>
             )}
+
             <div className="min-w-0">
               <p className="text-sm font-semibold text-gray-800 truncate">{userName}</p>
-              {log.profiles?.role && (
-                <p className="text-xs text-gray-400">{log.profiles.role}</p>
-              )}
+              {log.profiles?.role && <p className="text-xs text-gray-400">{log.profiles.role}</p>}
             </div>
           </div>
         </td>
 
-        {/* Table */}
         <td className="px-4 py-3">
           <span className="text-sm font-semibold text-blue-700">{tableName}</span>
         </td>
 
-        {/* Record ID */}
         <td className="px-4 py-3">
           {log.record_id ? (
             <span className="text-xs font-mono text-gray-500 bg-gray-100 px-2 py-0.5 rounded-lg">
               #{log.record_id.slice(0, 8)}
             </span>
-          ) : '—'}
+          ) : (
+            '—'
+          )}
         </td>
 
-        {/* IP */}
         <td className="px-4 py-3 text-xs font-mono text-gray-400">
           {String(log.ip_address ?? '—')}
         </td>
 
-        {/* Date */}
         <td className="px-4 py-3">
           <p className="text-sm font-semibold text-gray-700">{formatDate(log.created_at)}</p>
           <p className="text-xs text-gray-400">{formatTime(log.created_at)}</p>
         </td>
 
-        {/* Expand */}
         <td className="px-4 py-3">
           {hasData && (
             <button
-              onClick={() => setExpanded(e => !e)}
-              className={`p-1.5 rounded-xl transition-colors ${expanded ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-100 text-gray-400'}`}
+              onClick={() => setExpanded((e) => !e)}
+              className={`p-1.5 rounded-xl transition-colors ${
+                expanded ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-100 text-gray-400'
+              }`}
               title="عرض التفاصيل"
             >
               {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
@@ -258,7 +308,6 @@ function LogRow({ log }: { log: AuditLog }) {
         </td>
       </tr>
 
-      {/* Expanded data diff */}
       {expanded && hasData && (
         <tr className="bg-blue-50/40">
           <td colSpan={7} className="px-6 py-4">
@@ -274,10 +323,9 @@ function LogRow({ log }: { log: AuditLog }) {
   );
 }
 
-/* ── Export CSV ── */
 function exportCsv(logs: AuditLog[]) {
   const headers = ['الإجراء', 'المستخدم', 'الجدول', 'رقم السجل', 'عنوان IP', 'التاريخ والوقت'];
-  const rows = logs.map(l => [
+  const rows = logs.map((l) => [
     actionConfig[l.action]?.label ?? l.action,
     l.profiles?.full_name ?? 'النظام',
     tableLabels[l.table_name ?? ''] ?? l.table_name ?? '',
@@ -285,10 +333,14 @@ function exportCsv(logs: AuditLog[]) {
     String(l.ip_address ?? ''),
     new Date(l.created_at).toLocaleString('ar-EG'),
   ]);
+
   const bom = '\uFEFF';
-  const csv = bom + [headers, ...rows]
-    .map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))
-    .join('\n');
+  const csv =
+    bom +
+    [headers, ...rows]
+      .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
+      .join('\n');
+
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -298,32 +350,34 @@ function exportCsv(logs: AuditLog[]) {
   URL.revokeObjectURL(url);
 }
 
-/* ════════════════════════════════════════════════════════════
-   Main Page
-════════════════════════════════════════════════════════════ */
 export default function ActivityLog() {
   const qc = useQueryClient();
+  const { selectedCountry } = useCountry();
 
-  const [search, setSearch]     = useState('');
+  const [search, setSearch] = useState('');
   const [filterAction, setFilterAction] = useState('الكل');
-  const [filterTable, setFilterTable]   = useState('الكل');
+  const [filterTable, setFilterTable] = useState('الكل');
   const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo]     = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [showFilters, setShowFilters] = useState(false);
 
   const filters: LogFilters = {
-    action:    filterAction,
+    action: filterAction,
     tableName: filterTable,
-    dateFrom:  dateFrom || undefined,
-    dateTo:    dateTo   || undefined,
+    dateFrom: dateFrom || undefined,
+    dateTo: dateTo || undefined,
   };
 
   const { data: logs = [], isLoading, isError, refetch } = useAuditLogs(filters);
 
-  /* ── Client-side text search ── */
-  const filtered = logs.filter(l => {
+  const filtered = logs.filter((l) => {
+    const matchCountry = logMatchesSelectedCountry(l, selectedCountry?.id);
+
+    if (!matchCountry) return false;
+
     if (!search) return true;
     const q = search.toLowerCase();
+
     return (
       (l.profiles?.full_name ?? '').toLowerCase().includes(q) ||
       (tableLabels[l.table_name ?? ''] ?? l.table_name ?? '').includes(q) ||
@@ -332,17 +386,19 @@ export default function ActivityLog() {
     );
   });
 
-  /* ── Summary counts ── */
   const actionCounts = ALL_ACTIONS.reduce((acc, a) => {
-    acc[a] = logs.filter(l => l.action === a).length;
+    acc[a] = filtered.filter((l) => l.action === a).length;
     return acc;
   }, {} as Record<string, number>);
 
-  const uniqueTables = [...new Set(logs.map(l => l.table_name).filter(Boolean))];
+  const uniqueTables = [...new Set(filtered.map((l) => l.table_name).filter(Boolean))];
 
   const resetFilters = () => {
-    setSearch(''); setFilterAction('الكل'); setFilterTable('الكل');
-    setDateFrom(''); setDateTo('');
+    setSearch('');
+    setFilterAction('الكل');
+    setFilterTable('الكل');
+    setDateFrom('');
+    setDateTo('');
   };
 
   const hasFilters = filterAction !== 'الكل' || filterTable !== 'الكل' || dateFrom || dateTo || search;
@@ -350,25 +406,33 @@ export default function ActivityLog() {
   return (
     <Layout>
       <div className="fade-in" dir="rtl">
-
-        {/* Header */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
           <div>
             <h1 className="section-title">سجل النشاط</h1>
             <p className="section-subtitle">
-              متابعة جميع العمليات في النظام — بيانات حقيقية من جدول audit_logs
+              متابعة العمليات في النظام — السجلات العامة + السجلات المرتبطة بـ {selectedCountry?.name ?? 'الدولة الحالية'} عند توفر country_id
             </p>
+
+            <div className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-xl bg-blue-50 text-blue-700">
+              <Globe2 size={12} />
+              {selectedCountry?.name ?? 'كل الدول'}
+            </div>
           </div>
+
           <div className="flex gap-2">
             <button
-              onClick={() => { refetch(); toast.info('جارٍ التحديث...'); }}
+              onClick={() => {
+                refetch();
+                toast.info('جارٍ التحديث...');
+              }}
               className="p-2.5 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-gray-500 transition-colors"
               title="تحديث"
             >
               <RefreshCw size={16} />
             </button>
+
             <button
-              onClick={() => setShowFilters(f => !f)}
+              onClick={() => setShowFilters((f) => !f)}
               className={`btn-secondary flex items-center gap-2 text-sm ${showFilters ? 'bg-blue-50 text-blue-700 border-blue-200' : ''}`}
             >
               <Filter size={14} />
@@ -377,6 +441,7 @@ export default function ActivityLog() {
                 <span className="w-4 h-4 bg-blue-600 text-white rounded-full text-xs flex items-center justify-center">!</span>
               )}
             </button>
+
             <button
               onClick={() => exportCsv(filtered)}
               className="btn-primary flex items-center gap-2 text-sm"
@@ -386,11 +451,11 @@ export default function ActivityLog() {
           </div>
         </div>
 
-        {/* Action Summary Cards */}
         <div className="grid grid-cols-3 md:grid-cols-5 gap-3 mb-6">
-          {ALL_ACTIONS.map(action => {
+          {ALL_ACTIONS.map((action) => {
             const ac = actionConfig[action];
             const isActive = filterAction === action;
+
             return (
               <button
                 key={action}
@@ -411,14 +476,13 @@ export default function ActivityLog() {
           })}
         </div>
 
-        {/* Filters */}
         <div className="bg-white rounded-2xl p-4 shadow-sm mb-4">
           <div className="relative">
             <input
               type="text"
               placeholder="ابحث بالمستخدم، الجدول، رقم السجل، أو IP..."
               value={search}
-              onChange={e => setSearch(e.target.value)}
+              onChange={(e) => setSearch(e.target.value)}
               className="input-field pr-10"
             />
             <Search size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -428,28 +492,38 @@ export default function ActivityLog() {
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-3 pt-3 border-t border-gray-100">
               <div>
                 <label className="block text-xs font-semibold text-gray-500 mb-1.5">نوع العملية</label>
-                <select value={filterAction} onChange={e => setFilterAction(e.target.value)} className="input-field text-sm py-2 h-auto">
+                <select value={filterAction} onChange={(e) => setFilterAction(e.target.value)} className="input-field text-sm py-2 h-auto">
                   <option value="الكل">الكل</option>
-                  {ALL_ACTIONS.map(a => <option key={a} value={a}>{actionConfig[a]?.label ?? a}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1.5">الجدول</label>
-                <select value={filterTable} onChange={e => setFilterTable(e.target.value)} className="input-field text-sm py-2 h-auto">
-                  <option value="الكل">الكل</option>
-                  {uniqueTables.map(t => (
-                    <option key={t!} value={t!}>{tableLabels[t!] ?? t}</option>
+                  {ALL_ACTIONS.map((a) => (
+                    <option key={a} value={a}>
+                      {actionConfig[a]?.label ?? a}
+                    </option>
                   ))}
                 </select>
               </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">الجدول</label>
+                <select value={filterTable} onChange={(e) => setFilterTable(e.target.value)} className="input-field text-sm py-2 h-auto">
+                  <option value="الكل">الكل</option>
+                  {uniqueTables.map((t) => (
+                    <option key={t!} value={t!}>
+                      {tableLabels[t!] ?? t}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div>
                 <label className="block text-xs font-semibold text-gray-500 mb-1.5">من تاريخ</label>
-                <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} className="input-field text-sm py-2 h-auto" />
+                <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="input-field text-sm py-2 h-auto" />
               </div>
+
               <div>
                 <label className="block text-xs font-semibold text-gray-500 mb-1.5">إلى تاريخ</label>
-                <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} className="input-field text-sm py-2 h-auto" />
+                <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="input-field text-sm py-2 h-auto" />
               </div>
+
               <div className="flex items-end">
                 <button onClick={resetFilters} className="btn-secondary w-full text-sm flex items-center justify-center gap-1.5">
                   <X size={13} /> إعادة تعيين
@@ -459,7 +533,6 @@ export default function ActivityLog() {
           )}
         </div>
 
-        {/* Loading */}
         {isLoading && (
           <div className="flex items-center justify-center py-20 gap-3 text-gray-400">
             <Loader2 size={26} className="animate-spin" />
@@ -467,7 +540,6 @@ export default function ActivityLog() {
           </div>
         )}
 
-        {/* Error */}
         {isError && (
           <div className="flex flex-col items-center justify-center py-20 gap-3 text-amber-500">
             <AlertCircle size={32} />
@@ -478,13 +550,13 @@ export default function ActivityLog() {
           </div>
         )}
 
-        {/* Table */}
         {!isLoading && !isError && (
           <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
             <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between flex-wrap gap-2">
               <p className="text-sm text-gray-500">
                 {filtered.length} سجل{hasFilters && ' (مفلتر)'}
               </p>
+
               {hasFilters && (
                 <button
                   onClick={resetFilters}
@@ -499,7 +571,7 @@ export default function ActivityLog() {
               <div className="text-center py-16 text-gray-400">
                 <FileText size={40} className="text-gray-200 mx-auto mb-3" />
                 <p className="font-semibold text-gray-500">لا توجد سجلات</p>
-                <p className="text-sm mt-1">لم يتم تسجيل أي نشاط بعد، أو الفلاتر لا تطابق أي نتيجة</p>
+                <p className="text-sm mt-1">لا توجد سجلات مطابقة للدولة الحالية أو الفلاتر</p>
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -515,8 +587,9 @@ export default function ActivityLog() {
                       <th className="text-right px-4 py-3 font-semibold">تفاصيل</th>
                     </tr>
                   </thead>
+
                   <tbody>
-                    {filtered.map(log => (
+                    {filtered.map((log) => (
                       <LogRow key={log.id} log={log} />
                     ))}
                   </tbody>
@@ -525,7 +598,6 @@ export default function ActivityLog() {
             )}
           </div>
         )}
-
       </div>
     </Layout>
   );
