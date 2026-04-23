@@ -1,10 +1,10 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef } from 'react';
 import Layout from '@/components/layout/Layout';
 import {
   Search, Plus, Edit, Trash2, BookOpen, Copy, ToggleLeft,
   ToggleRight, BarChart2, X, Upload, Tag, DollarSign, Package,
-  FileText, Loader2, AlertCircle, ImageIcon, Link2, Star,
-  StarOff, Download, ChevronLeft, ChevronRight, Filter
+  FileText, Loader2, AlertCircle, ImageIcon, Star,
+  Download, Filter, Globe2
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -12,10 +12,10 @@ import {
   useUpsertProduct, useDeleteProduct, useToggleProductStatus,
   useProductImages, useDeleteProductImage, useSetPrimaryImage,
   uploadCoverImage, uploadEbookFile, uploadProductImage,
-  type Product, type ProductVariant, type UpsertProductInput, type ProductImage
+  type Product, type UpsertProductInput,
 } from '@/hooks/useBooks';
+import { useCountry } from '@/contexts/CountryContext';
 
-/* ── Types ── */
 interface VariantForm {
   _key: string;
   variant_name: string;
@@ -39,18 +39,29 @@ interface BookForm {
 }
 
 const emptyForm: BookForm = {
-  title: '', author: '', description: '', category_id: '', isbn: '',
-  keywords: '', cost_price: '', base_price: '', sale_price: '', cover_url: '', seriesIds: [],
+  title: '',
+  author: '',
+  description: '',
+  category_id: '',
+  isbn: '',
+  keywords: '',
+  cost_price: '',
+  base_price: '',
+  sale_price: '',
+  cover_url: '',
+  seriesIds: [],
 };
 
 const emptyVariant = (): VariantForm => ({
   _key: Date.now().toString() + Math.random(),
-  variant_name: 'ورق عادي', variant_type: 'مادي', sku: '', price: '',
+  variant_name: 'ورق عادي',
+  variant_type: 'مادي',
+  sku: '',
+  price: '',
 });
 
 const VARIANT_NAMES = ['ورق عادي', 'ورق فاخر', 'A4', 'كوشيه', 'إلكتروني'];
 
-/* ── Status / Type config ── */
 const typeConfig: Record<string, string> = {
   'ورقي': 'bg-blue-100 text-blue-700',
   'رقمي': 'bg-purple-100 text-purple-700',
@@ -58,25 +69,29 @@ const typeConfig: Record<string, string> = {
 };
 
 function deriveType(variants: VariantForm[]): Product['type'] {
-  const hasD = variants.some(v => v.variant_type === 'رقمي');
-  const hasP = variants.some(v => v.variant_type === 'مادي');
+  const hasD = variants.some((v) => v.variant_type === 'رقمي');
+  const hasP = variants.some((v) => v.variant_type === 'مادي');
   return hasD && hasP ? 'ورقي ورقمي' : hasD ? 'رقمي' : 'ورقي';
 }
 
-/* ── Export CSV ── */
-function exportCsv(products: Product[]) {
-  const headers = ['العنوان', 'المؤلف', 'النوع', 'التصنيف', 'سعر التكلفة', 'سعر البيع', 'الحالة', 'ISBN'];
-  const rows = products.map(p => [
-    p.title, p.author, p.type,
+function exportCsv(products: Product[], currencySymbol: string) {
+  const headers = ['العنوان', 'المؤلف', 'النوع', 'التصنيف', `سعر التكلفة (${currencySymbol})`, `سعر البيع (${currencySymbol})`, 'الحالة', 'ISBN'];
+  const rows = products.map((p) => [
+    p.title,
+    p.author,
+    p.type,
     p.categories?.name ?? '',
-    p.cost_price, p.sale_price ?? p.base_price,
+    p.cost_price,
+    p.sale_price ?? p.base_price,
     p.is_active ? 'نشط' : 'مخفي',
     p.isbn ?? '',
   ]);
+
   const bom = '\uFEFF';
   const csv = bom + [headers, ...rows]
-    .map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(','))
+    .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
     .join('\n');
+
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -86,8 +101,13 @@ function exportCsv(products: Product[]) {
   URL.revokeObjectURL(url);
 }
 
-/* ── Multi-image gallery (inside modal) ── */
-function ImageGallery({ productId, onNewCoverUrl }: { productId: string; onNewCoverUrl: (url: string) => void }) {
+function ImageGallery({
+  productId,
+  onNewCoverUrl,
+}: {
+  productId: string;
+  onNewCoverUrl: (url: string) => void;
+}) {
   const { data: images = [], isLoading } = useProductImages(productId);
   const deleteMutation = useDeleteProductImage();
   const setPrimaryMutation = useSetPrimaryImage();
@@ -97,24 +117,24 @@ function ImageGallery({ productId, onNewCoverUrl }: { productId: string; onNewCo
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     if (!files.length) return;
+
     setUploading(true);
     try {
       for (const file of files) {
         const url = await uploadProductImage(file, productId);
-        // Insert into product_images
         const { supabase } = await import('@/lib/supabase');
+
         await supabase.from('product_images').insert({
           product_id: productId,
           url,
           sort_order: images.length,
           is_primary: images.length === 0,
         });
+
         if (images.length === 0) onNewCoverUrl(url);
       }
+
       toast.success(`تم رفع ${files.length} صورة بنجاح`);
-      // invalidate
-      const { useQueryClient } = await import('@tanstack/react-query');
-      // We can't call hooks here, so we'll rely on the mutation onSuccess
     } catch (err: unknown) {
       toast.error('فشل رفع الصورة: ' + (err instanceof Error ? err.message : String(err)));
     } finally {
@@ -123,9 +143,13 @@ function ImageGallery({ productId, onNewCoverUrl }: { productId: string; onNewCo
     }
   };
 
-  if (isLoading) return (
-    <div className="flex justify-center py-6"><Loader2 size={20} className="animate-spin text-gray-400" /></div>
-  );
+  if (isLoading) {
+    return (
+      <div className="flex justify-center py-6">
+        <Loader2 size={20} className="animate-spin text-gray-400" />
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -153,25 +177,30 @@ function ImageGallery({ productId, onNewCoverUrl }: { productId: string; onNewCo
         </div>
       ) : (
         <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
-          {images.map(img => (
+          {images.map((img) => (
             <div key={img.id} className="relative group aspect-[3/4] rounded-xl overflow-hidden bg-gray-100 border border-gray-200">
               <img src={img.url} alt={img.alt_text ?? ''} className="w-full h-full object-cover" />
               {img.is_primary && (
                 <div className="absolute top-1.5 right-1.5 bg-amber-400 text-white text-xs px-1.5 py-0.5 rounded-lg flex items-center gap-1">
-                  <Star size={9} fill="white" /> رئيسية
+                  <Star size={9} fill="white" />
+                  رئيسية
                 </div>
               )}
-              {/* Hover overlay */}
+
               <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
                 {!img.is_primary && (
                   <button
-                    onClick={() => { setPrimaryMutation.mutate({ imageId: img.id, productId, imageUrl: img.url }); onNewCoverUrl(img.url); }}
+                    onClick={() => {
+                      setPrimaryMutation.mutate({ imageId: img.id, productId, imageUrl: img.url });
+                      onNewCoverUrl(img.url);
+                    }}
                     title="تعيين كرئيسية"
                     className="p-1.5 bg-amber-400 rounded-lg text-white hover:bg-amber-500"
                   >
                     <Star size={13} />
                   </button>
                 )}
+
                 <button
                   onClick={() => deleteMutation.mutate({ id: img.id, url: img.url })}
                   title="حذف"
@@ -182,7 +211,7 @@ function ImageGallery({ productId, onNewCoverUrl }: { productId: string; onNewCo
               </div>
             </div>
           ))}
-          {/* Add more button */}
+
           <div
             className="aspect-[3/4] rounded-xl border-2 border-dashed border-gray-200 flex items-center justify-center cursor-pointer hover:border-blue-300 transition-colors"
             onClick={() => inputRef.current?.click()}
@@ -198,8 +227,9 @@ function ImageGallery({ productId, onNewCoverUrl }: { productId: string; onNewCo
   );
 }
 
-/* ══════════════════════════════════════════════════════════ */
 export default function Books() {
+  const { selectedCountry, currencySymbol } = useCountry();
+
   const { data: products = [], isLoading, isError } = useProducts();
   const { data: categories = [] } = useCategories();
   const { data: allSeries = [] } = useBookSeries();
@@ -221,7 +251,6 @@ export default function Books() {
   const [variants, setVariants] = useState<VariantForm[]>([]);
   const [activeTab, setActiveTab] = useState<'info' | 'variants' | 'media'>('info');
 
-  // Upload state
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverPreview, setCoverPreview] = useState<string>('');
   const [ebookFile, setEbookFile] = useState<File | null>(null);
@@ -231,16 +260,18 @@ export default function Books() {
   const coverInputRef = useRef<HTMLInputElement>(null);
   const ebookInputRef = useRef<HTMLInputElement>(null);
 
-  /* ── Computed ── */
   const profit =
     form.sale_price && form.cost_price
       ? (parseFloat(form.sale_price) - parseFloat(form.cost_price)).toFixed(2)
       : null;
 
   const filtered = products
-    .filter(p => {
+    .filter((p) => {
       const s = search.toLowerCase();
-      const ms = p.title.toLowerCase().includes(s) || p.author.toLowerCase().includes(s) || (p.isbn ?? '').includes(s);
+      const ms =
+        p.title.toLowerCase().includes(s) ||
+        p.author.toLowerCase().includes(s) ||
+        (p.isbn ?? '').includes(s);
       const mt = filterType === 'الكل' || p.type === filterType;
       const ma = filterActive === 'الكل' || (filterActive === 'نشط' ? p.is_active : !p.is_active);
       const mc = filterCategory === 'الكل' || p.category_id === filterCategory;
@@ -252,12 +283,14 @@ export default function Books() {
       return b.created_at.localeCompare(a.created_at);
     });
 
-  /* ── Modal helpers ── */
   const openAdd = () => {
     setEditProduct(null);
     setForm(emptyForm);
     setVariants([]);
-    setCoverFile(null); setCoverPreview(''); setEbookFile(null); setEbookPath('');
+    setCoverFile(null);
+    setCoverPreview('');
+    setEbookFile(null);
+    setEbookPath('');
     setActiveTab('info');
     setShowModal(true);
   };
@@ -265,15 +298,20 @@ export default function Books() {
   const openEdit = (p: Product) => {
     setEditProduct(p);
     setForm({
-      title: p.title, author: p.author, description: p.description ?? '',
-      category_id: p.category_id ?? '', isbn: p.isbn ?? '',
+      title: p.title,
+      author: p.author,
+      description: p.description ?? '',
+      category_id: p.category_id ?? '',
+      isbn: p.isbn ?? '',
       keywords: (p.keywords ?? []).join('، '),
-      cost_price: String(p.cost_price), base_price: String(p.base_price),
-      sale_price: String(p.sale_price ?? ''), cover_url: p.cover_url ?? '',
-      seriesIds: (p.product_series ?? []).map(s => s.series_id),
+      cost_price: String(p.cost_price),
+      base_price: String(p.base_price),
+      sale_price: String(p.sale_price ?? ''),
+      cover_url: p.cover_url ?? '',
+      seriesIds: (p.product_series ?? []).map((s) => s.series_id),
     });
     setVariants(
-      (p.product_variants ?? []).map(v => ({
+      (p.product_variants ?? []).map((v) => ({
         _key: v.id,
         variant_name: v.variant_name,
         variant_type: v.variant_type,
@@ -283,12 +321,13 @@ export default function Books() {
     );
     const existingEbook = p.electronic_books?.[0];
     setEbookPath(existingEbook?.file_path ?? '');
-    setCoverFile(null); setCoverPreview(''); setEbookFile(null);
+    setCoverFile(null);
+    setCoverPreview('');
+    setEbookFile(null);
     setActiveTab('info');
     setShowModal(true);
   };
 
-  /* ── Cover image selection ── */
   const handleCoverSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -296,7 +335,6 @@ export default function Books() {
     setCoverPreview(URL.createObjectURL(file));
   };
 
-  /* ── Ebook file selection ── */
   const handleEbookSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -304,7 +342,6 @@ export default function Books() {
     toast.success(`تم اختيار الملف: ${file.name}`);
   };
 
-  /* ── Save ── */
   const handleSave = async () => {
     if (!form.title || !form.author) {
       toast.error('العنوان والمؤلف إلزاميان');
@@ -312,23 +349,21 @@ export default function Books() {
     }
 
     setUploading(true);
+
     let finalCoverUrl = form.cover_url;
     let finalEbookPath = ebookPath;
-
     const tempId = editProduct?.id || `temp-${Date.now()}`;
 
-    // Upload cover
     if (coverFile) {
-      finalCoverUrl = await uploadCoverImage(coverFile, tempId).catch(err => {
+      finalCoverUrl = await uploadCoverImage(coverFile, tempId).catch((err) => {
         toast.error('فشل رفع صورة الغلاف: ' + err.message);
         return finalCoverUrl;
       });
     }
 
-    // Upload ebook
-    const hasDigitalVariant = variants.some(v => v.variant_type === 'رقمي');
+    const hasDigitalVariant = variants.some((v) => v.variant_type === 'رقمي');
     if (ebookFile && hasDigitalVariant) {
-      finalEbookPath = await uploadEbookFile(ebookFile, tempId).catch(err => {
+      finalEbookPath = await uploadEbookFile(ebookFile, tempId).catch((err) => {
         toast.error('فشل رفع ملف الكتاب: ' + err.message);
         return finalEbookPath;
       });
@@ -344,13 +379,15 @@ export default function Books() {
       cover_url: finalCoverUrl || undefined,
       category_id: form.category_id || undefined,
       isbn: form.isbn || undefined,
-      keywords: form.keywords ? form.keywords.split('،').map(k => k.trim()).filter(Boolean) : [],
+      keywords: form.keywords
+        ? form.keywords.split('،').map((k) => k.trim()).filter(Boolean)
+        : [],
       type: deriveType(variants),
       cost_price: parseFloat(form.cost_price) || 0,
       base_price: parseFloat(form.base_price) || 0,
       sale_price: parseFloat(form.sale_price) || undefined,
       is_active: true,
-      variants: variants.map(v => ({
+      variants: variants.map((v) => ({
         id: v._key,
         variant_name: v.variant_name,
         variant_type: v.variant_type,
@@ -365,7 +402,6 @@ export default function Books() {
     setShowModal(false);
   };
 
-  /* ── Copy product ── */
   const handleCopy = async (p: Product) => {
     await upsertMutation.mutateAsync({
       title: `${p.title} (نسخة)`,
@@ -379,65 +415,87 @@ export default function Books() {
       cost_price: p.cost_price,
       base_price: p.base_price,
       sale_price: p.sale_price,
-      variants: (p.product_variants ?? []).map(v => ({ ...v, sku: undefined })),
+      variants: (p.product_variants ?? []).map((v) => ({ ...v, sku: undefined })),
     });
   };
 
-  /* ── UI helpers ── */
   const tabBtn = (key: 'info' | 'variants' | 'media', label: string) => (
     <button
       onClick={() => setActiveTab(key)}
-      className={`px-4 py-2 rounded-xl text-sm font-semibold transition-colors ${activeTab === key ? 'bg-blue-700 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+      className={`px-4 py-2 rounded-xl text-sm font-semibold transition-colors ${
+        activeTab === key ? 'bg-blue-700 text-white' : 'text-gray-600 hover:bg-gray-100'
+      }`}
     >
       {label}
     </button>
   );
 
   const isBusy = upsertMutation.isPending || uploading;
-  const hasFilters = filterType !== 'الكل' || filterActive !== 'الكل' || filterCategory !== 'الكل' || search;
+  const hasFilters =
+    filterType !== 'الكل' ||
+    filterActive !== 'الكل' ||
+    filterCategory !== 'الكل' ||
+    search;
 
   const resetFilters = () => {
-    setSearch(''); setFilterType('الكل'); setFilterActive('الكل'); setFilterCategory('الكل');
+    setSearch('');
+    setFilterType('الكل');
+    setFilterActive('الكل');
+    setFilterCategory('الكل');
   };
 
-  /* ══════════ RENDER ══════════ */
   return (
     <Layout>
       <div className="fade-in" dir="rtl">
-        {/* Header */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
           <div>
             <h1 className="section-title">إدارة الكتب</h1>
-            <p className="section-subtitle">إضافة وتعديل وحذف الكتب الورقية والرقمية</p>
+            <p className="section-subtitle">
+              إضافة وتعديل وحذف الكتب — {selectedCountry?.name ? `كتب ${selectedCountry.name}` : 'جميع الكتب'}
+            </p>
+            <div className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-xl bg-blue-50 text-blue-700">
+              <Globe2 size={12} />
+              {selectedCountry?.name ?? 'كل الدول'} · {currencySymbol}
+            </div>
           </div>
+
           <div className="flex gap-2 flex-wrap">
             <button
-              onClick={() => setShowFilters(f => !f)}
-              className={`btn-secondary flex items-center gap-2 text-sm ${showFilters ? 'bg-blue-50 text-blue-700 border-blue-200' : ''}`}
+              onClick={() => setShowFilters((f) => !f)}
+              className={`btn-secondary flex items-center gap-2 text-sm ${
+                showFilters ? 'bg-blue-50 text-blue-700 border-blue-200' : ''
+              }`}
             >
               <Filter size={14} />
               فلترة
-              {hasFilters && <span className="w-4 h-4 bg-blue-600 text-white rounded-full text-xs flex items-center justify-center">!</span>}
+              {hasFilters && (
+                <span className="w-4 h-4 bg-blue-600 text-white rounded-full text-xs flex items-center justify-center">
+                  !
+                </span>
+              )}
             </button>
+
             <button
-              onClick={() => exportCsv(filtered)}
+              onClick={() => exportCsv(filtered, currencySymbol)}
               className="btn-secondary flex items-center gap-2 text-sm"
             >
-              <Download size={14} /> تصدير CSV
+              <Download size={14} />
+              تصدير CSV
             </button>
+
             <button onClick={openAdd} className="btn-primary flex items-center gap-2">
-              <Plus size={16} /> إضافة كتاب جديد
+              <Plus size={16} />
+              إضافة كتاب جديد
             </button>
           </div>
         </div>
 
-        {/* Summary cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           {[
             { label: 'إجمالي الكتب', value: products.length, color: 'text-blue-700', bg: 'bg-blue-50' },
-            { label: 'نشط', value: products.filter(b => b.is_active).length, color: 'text-green-700', bg: 'bg-green-50' },
-            { label: 'غير نشط', value: products.filter(b => !b.is_active).length, color: 'text-red-600', bg: 'bg-red-50' },
-            { label: 'كتب رقمية', value: products.filter(b => b.type !== 'ورقي').length, color: 'text-purple-700', bg: 'bg-purple-50' },
+            { label: 'نشط', value: products.filter((b) => b.is_active).length, color: 'text-green-700', bg: 'bg-green-50' },
+            { label: 'غير نشط', value: products.filter((b) => !b.is_active).length, color: 'text-red-600', bg: 'bg-red-50' },
+            { label: 'كتب رقمية', value: products.filter((b) => b.type !== 'ورقي').length, color: 'text-purple-700', bg: 'bg-purple-50' },
           ].map((s, i) => (
             <div key={i} className="bg-white rounded-2xl p-4 shadow-sm text-center">
               <div className={`w-10 h-10 ${s.bg} rounded-xl mx-auto flex items-center justify-center mb-2`}>
@@ -449,71 +507,67 @@ export default function Books() {
           ))}
         </div>
 
-        {/* Filters */}
         <div className="bg-white rounded-2xl p-4 shadow-sm mb-4">
           <div className="relative">
-            <input type="text" placeholder="ابحث بالعنوان، المؤلف، ISBN..." value={search}
-              onChange={e => setSearch(e.target.value)} className="input-field pr-10" />
+            <input
+              type="text"
+              placeholder="ابحث بالعنوان، المؤلف، ISBN..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="input-field pr-10"
+            />
             <Search size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" />
           </div>
 
           {showFilters && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3 pt-3 border-t border-gray-100">
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1.5">النوع</label>
-                <select value={filterType} onChange={e => setFilterType(e.target.value)} className="input-field text-sm py-2 h-auto">
-                  <option>الكل</option><option>ورقي</option><option>رقمي</option><option>ورقي ورقمي</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1.5">الحالة</label>
-                <select value={filterActive} onChange={e => setFilterActive(e.target.value)} className="input-field text-sm py-2 h-auto">
-                  <option>الكل</option><option value="نشط">نشط</option><option value="مخفي">مخفي</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1.5">التصنيف</label>
-                <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)} className="input-field text-sm py-2 h-auto">
-                  <option value="الكل">الكل</option>
-                  {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1.5">ترتيب</label>
-                <select value={sortBy} onChange={e => setSortBy(e.target.value)} className="input-field text-sm py-2 h-auto">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mt-4 pt-4 border-t border-gray-100">
+              <select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="input-field">
+                <option>الكل</option>
+                <option>ورقي</option>
+                <option>رقمي</option>
+                <option>ورقي ورقمي</option>
+              </select>
+
+              <select value={filterActive} onChange={(e) => setFilterActive(e.target.value)} className="input-field">
+                <option>الكل</option>
+                <option>نشط</option>
+                <option>مخفي</option>
+              </select>
+
+              <select value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} className="input-field">
+                <option value="الكل">كل التصنيفات</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+
+              <div className="flex gap-2">
+                <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} className="input-field flex-1">
                   <option value="created_at">الأحدث</option>
+                  <option value="title">العنوان</option>
                   <option value="base_price">السعر</option>
-                  <option value="title">الاسم</option>
                 </select>
+
+                <button onClick={resetFilters} className="btn-secondary whitespace-nowrap">
+                  إعادة
+                </button>
               </div>
-              {hasFilters && (
-                <div className="col-span-2 md:col-span-4 flex justify-end">
-                  <button onClick={resetFilters} className="text-xs text-blue-600 hover:underline flex items-center gap-1">
-                    <X size={11} /> إعادة تعيين الفلاتر
-                  </button>
-                </div>
-              )}
             </div>
           )}
         </div>
 
-        {/* Table */}
         <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-          <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-            <p className="text-sm text-gray-500">{filtered.length} كتاب{hasFilters ? ' (مفلتر)' : ''}</p>
-          </div>
-
           {isLoading && (
-            <div className="flex items-center justify-center py-16 gap-3 text-gray-400">
-              <Loader2 size={24} className="animate-spin" />
+            <div className="flex items-center justify-center py-16 gap-2 text-gray-400">
+              <Loader2 size={22} className="animate-spin" />
               <span>جارٍ تحميل الكتب...</span>
             </div>
           )}
 
           {isError && (
-            <div className="flex items-center justify-center py-16 gap-3 text-red-500">
-              <AlertCircle size={24} />
-              <span>حدث خطأ أثناء تحميل البيانات</span>
+            <div className="flex flex-col items-center justify-center py-16 gap-2 text-red-400">
+              <AlertCircle size={28} />
+              <span>تعذّر تحميل الكتب</span>
             </div>
           )}
 
@@ -523,103 +577,136 @@ export default function Books() {
                 <thead>
                   <tr className="table-header">
                     <th className="text-right px-4 py-3">الكتاب</th>
-                    <th className="text-right px-4 py-3">الفئة</th>
+                    <th className="text-right px-4 py-3">التصنيف</th>
                     <th className="text-right px-4 py-3">النوع</th>
+                    <th className="text-right px-4 py-3">النسخ</th>
                     <th className="text-right px-4 py-3">التكلفة</th>
-                    <th className="text-right px-4 py-3">سعر البيع</th>
+                    <th className="text-right px-4 py-3">السعر</th>
                     <th className="text-right px-4 py-3">الربح</th>
-                    <th className="text-right px-4 py-3">الصور</th>
                     <th className="text-right px-4 py-3">الحالة</th>
-                    <th className="text-right px-4 py-3">الإجراءات</th>
+                    <th className="text-right px-4 py-3">إجراء</th>
                   </tr>
                 </thead>
+
                 <tbody>
-                  {filtered.map(product => {
+                  {filtered.map((product) => {
                     const sp = product.sale_price ?? product.base_price;
                     const profitVal = sp - product.cost_price;
-                    const imgCount = product.product_images?.length ?? 0;
+
                     return (
                       <tr key={product.id} className="table-row">
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-3">
-                            {/* Image stack preview */}
-                            <div className="relative flex-shrink-0">
-                              {product.cover_url ? (
-                                <img src={product.cover_url} alt={product.title}
-                                  className="w-10 h-14 rounded-lg object-cover border border-gray-100" />
-                              ) : (
-                                <div className="w-10 h-14 rounded-lg bg-gray-100 flex items-center justify-center">
-                                  <BookOpen size={16} className="text-gray-400" />
-                                </div>
-                              )}
-                              {imgCount > 1 && (
-                                <span className="absolute -bottom-1 -left-1 bg-blue-600 text-white text-xs rounded-full w-4 h-4 flex items-center justify-center font-bold">
-                                  {imgCount}
-                                </span>
-                              )}
-                            </div>
-                            <div>
-                              <p className="text-sm font-semibold text-gray-800 leading-tight">{product.title}</p>
+                            {product.cover_url ? (
+                              <img
+                                src={product.cover_url}
+                                alt={product.title}
+                                className="w-10 h-14 rounded-lg object-cover flex-shrink-0 border border-gray-200"
+                              />
+                            ) : (
+                              <div className="w-10 h-14 rounded-lg bg-gray-100 flex items-center justify-center flex-shrink-0 border border-gray-200">
+                                <BookOpen size={16} className="text-gray-300" />
+                              </div>
+                            )}
+
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold text-gray-800 truncate">{product.title}</p>
                               <p className="text-xs text-gray-400">{product.author}</p>
-                              {product.isbn && <p className="text-xs text-gray-300 mt-0.5">ISBN: {product.isbn}</p>}
+                              {product.isbn && (
+                                <p className="text-xs text-gray-300 mt-0.5 font-mono">{product.isbn}</p>
+                              )}
                             </div>
                           </div>
                         </td>
-                        <td className="px-4 py-3">
-                          <p className="text-sm text-gray-700">{product.categories?.name ?? '—'}</p>
-                          {product.product_series && product.product_series.length > 0 && (
-                            <p className="text-xs text-blue-500 mt-0.5">
-                              {product.product_series.map(s => s.book_series.name).join('، ')}
-                            </p>
-                          )}
+
+                        <td className="px-4 py-3 text-sm text-gray-600">
+                          {product.categories?.name ?? '—'}
                         </td>
+
                         <td className="px-4 py-3">
-                          <span className={`status-badge ${typeConfig[product.type]}`}>{product.type}</span>
+                          <span className={`status-badge ${typeConfig[product.type] ?? 'bg-gray-100 text-gray-600'}`}>
+                            {product.type}
+                          </span>
                         </td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{product.cost_price.toLocaleString()} ج.م</td>
-                        <td className="px-4 py-3 text-sm font-bold text-blue-700">{sp.toLocaleString()} ج.م</td>
+
+                        <td className="px-4 py-3 text-sm text-gray-600">
+                          {(product.product_variants ?? []).length}
+                        </td>
+
+                        <td className="px-4 py-3 text-sm text-gray-600">
+                          {product.cost_price.toLocaleString()} {currencySymbol}
+                        </td>
+
+                        <td className="px-4 py-3 text-sm font-bold text-blue-700">
+                          {sp.toLocaleString()} {currencySymbol}
+                        </td>
+
                         <td className="px-4 py-3">
                           <span className={`text-sm font-bold ${profitVal >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-                            {profitVal >= 0 ? '+' : ''}{profitVal.toLocaleString()} ج.م
+                            {profitVal >= 0 ? '+' : ''}
+                            {profitVal.toLocaleString()} {currencySymbol}
                           </span>
                         </td>
-                        <td className="px-4 py-3">
-                          <span className="text-sm text-gray-500">
-                            {imgCount > 0 ? `${imgCount} صورة` : '—'}
-                          </span>
-                        </td>
+
                         <td className="px-4 py-3">
                           <span className={`status-badge ${product.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
                             {product.is_active ? 'نشط' : 'مخفي'}
                           </span>
                         </td>
+
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1">
-                            <button onClick={() => toast.info(`عرض أداء ${product.title}`)} title="الأداء"
-                              className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500"><BarChart2 size={14} /></button>
-                            <button onClick={() => openEdit(product)} title="تعديل"
-                              className="p-1.5 rounded-lg hover:bg-amber-50 text-amber-600"><Edit size={14} /></button>
-                            <button onClick={() => handleCopy(product)} title="نسخ"
-                              className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600"><Copy size={14} /></button>
+                            <button
+                              onClick={() => toast.info(`عرض أداء ${product.title}`)}
+                              title="الأداء"
+                              className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500"
+                            >
+                              <BarChart2 size={14} />
+                            </button>
+
+                            <button
+                              onClick={() => openEdit(product)}
+                              title="تعديل"
+                              className="p-1.5 rounded-lg hover:bg-amber-50 text-amber-600"
+                            >
+                              <Edit size={14} />
+                            </button>
+
+                            <button
+                              onClick={() => handleCopy(product)}
+                              title="نسخ"
+                              className="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600"
+                            >
+                              <Copy size={14} />
+                            </button>
+
                             <button
                               onClick={() => toggleMutation.mutate({ id: product.id, is_active: !product.is_active })}
                               title={product.is_active ? 'إخفاء' : 'تفعيل'}
-                              className="p-1.5 rounded-lg hover:bg-indigo-50 text-indigo-600">
+                              className="p-1.5 rounded-lg hover:bg-indigo-50 text-indigo-600"
+                            >
                               {product.is_active ? <ToggleRight size={14} /> : <ToggleLeft size={14} />}
                             </button>
-                            <button onClick={() => deleteMutation.mutate(product.id)} title="حذف"
-                              className="p-1.5 rounded-lg hover:bg-red-50 text-red-500"><Trash2 size={14} /></button>
+
+                            <button
+                              onClick={() => deleteMutation.mutate(product.id)}
+                              title="حذف"
+                              className="p-1.5 rounded-lg hover:bg-red-50 text-red-500"
+                            >
+                              <Trash2 size={14} />
+                            </button>
                           </div>
                         </td>
                       </tr>
                     );
                   })}
+
                   {filtered.length === 0 && (
                     <tr>
                       <td colSpan={9} className="text-center py-16 text-gray-400">
                         <BookOpen size={40} className="mx-auto mb-3 text-gray-200" />
                         <p className="font-semibold">لا توجد كتب</p>
-                        <p className="text-sm mt-1">أضف أول كتاب للمكتبة</p>
+                        <p className="text-sm mt-1">لا توجد كتب مرتبطة بهذه الدولة بعد</p>
                       </td>
                     </tr>
                   )}
@@ -630,11 +717,9 @@ export default function Books() {
         </div>
       </div>
 
-      {/* ═════════════ MODAL ═════════════ */}
       {showModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-start justify-center p-4 overflow-y-auto" dir="rtl">
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl my-6">
-            {/* Modal Header */}
             <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center">
@@ -642,15 +727,22 @@ export default function Books() {
                 </div>
                 <div>
                   <h2 className="font-bold text-gray-800">{editProduct ? 'تعديل الكتاب' : 'إضافة كتاب جديد'}</h2>
-                  <p className="text-xs text-gray-400">أدخل بيانات الكتاب بالكامل</p>
+                  <p className="text-xs text-gray-400">
+                    {selectedCountry?.name
+                      ? `الأسعار المعروضة تخص ${selectedCountry.name}`
+                      : 'أدخل بيانات الكتاب بالكامل'}
+                  </p>
                 </div>
               </div>
-              <button onClick={() => setShowModal(false)} className="p-2 rounded-xl hover:bg-gray-100 text-gray-400 hover:text-gray-600">
+
+              <button
+                onClick={() => setShowModal(false)}
+                className="p-2 rounded-xl hover:bg-gray-100 text-gray-400 hover:text-gray-600"
+              >
                 <X size={20} />
               </button>
             </div>
 
-            {/* Tabs */}
             <div className="flex gap-2 px-6 py-4 border-b border-gray-100 bg-gray-50/50">
               {tabBtn('info', '📋 المعلومات الأساسية')}
               {tabBtn('variants', '📦 أنواع النسخ')}
@@ -658,117 +750,193 @@ export default function Books() {
             </div>
 
             <div className="p-6">
-              {/* ─── TAB: INFO ─── */}
               {activeTab === 'info' && (
                 <div className="space-y-4">
+                  {selectedCountry?.name && (
+                    <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4 text-sm text-blue-700 font-semibold">
+                      الأسعار التالية مرتبطة بالدولة الحالية: {selectedCountry.name} · {currencySymbol}
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-sm font-semibold text-gray-700 mb-1.5">اسم الكتاب <span className="text-red-500">*</span></label>
-                      <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
-                        className="input-field" placeholder="مثال: ذاكرة الجسد" />
+                      <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+                        اسم الكتاب <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        value={form.title}
+                        onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))}
+                        className="input-field"
+                        placeholder="مثال: ذاكرة الجسد"
+                      />
                     </div>
+
                     <div>
-                      <label className="block text-sm font-semibold text-gray-700 mb-1.5">المؤلف <span className="text-red-500">*</span></label>
-                      <input value={form.author} onChange={e => setForm(f => ({ ...f, author: e.target.value }))}
-                        className="input-field" placeholder="اسم المؤلف" />
+                      <label className="block text-sm font-semibold text-gray-700 mb-1.5">
+                        المؤلف <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        value={form.author}
+                        onChange={(e) => setForm((f) => ({ ...f, author: e.target.value }))}
+                        className="input-field"
+                        placeholder="اسم المؤلف"
+                      />
                     </div>
                   </div>
 
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-1.5">الوصف</label>
-                    <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-                      className="input-field resize-none" rows={3} placeholder="وصف مختصر للكتاب..." />
+                    <textarea
+                      value={form.description}
+                      onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+                      className="input-field resize-none"
+                      rows={3}
+                      placeholder="وصف مختصر للكتاب..."
+                    />
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-sm font-semibold text-gray-700 mb-1.5">التصنيف</label>
-                      <select value={form.category_id} onChange={e => setForm(f => ({ ...f, category_id: e.target.value }))} className="input-field">
+                      <select
+                        value={form.category_id}
+                        onChange={(e) => setForm((f) => ({ ...f, category_id: e.target.value }))}
+                        className="input-field"
+                      >
                         <option value="">اختر التصنيف</option>
-                        {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        {categories.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
                       </select>
                     </div>
+
                     <div>
                       <label className="block text-sm font-semibold text-gray-700 mb-1.5">رقم ISBN</label>
-                      <input value={form.isbn} onChange={e => setForm(f => ({ ...f, isbn: e.target.value }))}
-                        className="input-field" placeholder="978-XXXXXXXXXX" />
+                      <input
+                        value={form.isbn}
+                        onChange={(e) => setForm((f) => ({ ...f, isbn: e.target.value }))}
+                        className="input-field"
+                        placeholder="978-XXXXXXXXXX"
+                      />
                     </div>
                   </div>
 
-                  {/* Series multi-select */}
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-1.5">السلاسل</label>
                     <div className="flex flex-wrap gap-2">
-                      {allSeries.map(s => {
+                      {allSeries.map((s) => {
                         const selected = form.seriesIds.includes(s.id);
                         return (
                           <button
                             key={s.id}
                             type="button"
-                            onClick={() => setForm(f => ({
-                              ...f,
-                              seriesIds: selected
-                                ? f.seriesIds.filter(id => id !== s.id)
-                                : [...f.seriesIds, s.id],
-                            }))}
+                            onClick={() =>
+                              setForm((f) => ({
+                                ...f,
+                                seriesIds: selected
+                                  ? f.seriesIds.filter((id) => id !== s.id)
+                                  : [...f.seriesIds, s.id],
+                              }))
+                            }
                             className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
-                              selected ? 'bg-blue-700 text-white border-blue-700' : 'border-gray-200 text-gray-600 hover:border-blue-300'
+                              selected
+                                ? 'bg-blue-700 text-white border-blue-700'
+                                : 'border-gray-200 text-gray-600 hover:border-blue-300'
                             }`}
                           >
                             {s.name}
                           </button>
                         );
                       })}
-                      {allSeries.length === 0 && <p className="text-xs text-gray-400">لا توجد سلاسل، أضف من صفحة السلاسل</p>}
+                      {allSeries.length === 0 && (
+                        <p className="text-xs text-gray-400">لا توجد سلاسل، أضف من صفحة السلاسل</p>
+                      )}
                     </div>
                   </div>
 
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-1.5 flex items-center gap-1.5"><Tag size={14} />الكلمات المفتاحية</label>
-                    <input value={form.keywords} onChange={e => setForm(f => ({ ...f, keywords: e.target.value }))}
-                      className="input-field" placeholder="رواية، أدب، تاريخ — مفصولة بـ ،" />
+                    <label className="block text-sm font-semibold text-gray-700 mb-1.5 flex items-center gap-1.5">
+                      <Tag size={14} />
+                      الكلمات المفتاحية
+                    </label>
+                    <input
+                      value={form.keywords}
+                      onChange={(e) => setForm((f) => ({ ...f, keywords: e.target.value }))}
+                      className="input-field"
+                      placeholder="رواية، أدب، تاريخ — مفصولة بـ ،"
+                    />
                   </div>
 
-                  {/* Pricing */}
                   <div className="bg-blue-50 rounded-2xl p-4">
-                    <h4 className="text-sm font-bold text-blue-800 mb-3 flex items-center gap-2"><DollarSign size={15} />التسعير</h4>
+                    <h4 className="text-sm font-bold text-blue-800 mb-3 flex items-center gap-2">
+                      <DollarSign size={15} />
+                      التسعير
+                    </h4>
+
                     <div className="grid grid-cols-3 gap-3">
                       <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">سعر التكلفة (ج.م)</label>
-                        <input type="number" value={form.cost_price} onChange={e => setForm(f => ({ ...f, cost_price: e.target.value }))}
-                          className="input-field" placeholder="0.00" />
+                        <label className="block text-xs font-semibold text-gray-600 mb-1">
+                          سعر التكلفة ({currencySymbol})
+                        </label>
+                        <input
+                          type="number"
+                          value={form.cost_price}
+                          onChange={(e) => setForm((f) => ({ ...f, cost_price: e.target.value }))}
+                          className="input-field"
+                          placeholder="0.00"
+                        />
                       </div>
+
                       <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">سعر الأساس (ج.م)</label>
-                        <input type="number" value={form.base_price} onChange={e => setForm(f => ({ ...f, base_price: e.target.value }))}
-                          className="input-field" placeholder="0.00" />
+                        <label className="block text-xs font-semibold text-gray-600 mb-1">
+                          سعر الأساس ({currencySymbol})
+                        </label>
+                        <input
+                          type="number"
+                          value={form.base_price}
+                          onChange={(e) => setForm((f) => ({ ...f, base_price: e.target.value }))}
+                          className="input-field"
+                          placeholder="0.00"
+                        />
                       </div>
+
                       <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">سعر البيع (ج.م)</label>
-                        <input type="number" value={form.sale_price} onChange={e => setForm(f => ({ ...f, sale_price: e.target.value }))}
-                          className="input-field" placeholder="0.00" />
+                        <label className="block text-xs font-semibold text-gray-600 mb-1">
+                          سعر البيع ({currencySymbol})
+                        </label>
+                        <input
+                          type="number"
+                          value={form.sale_price}
+                          onChange={(e) => setForm((f) => ({ ...f, sale_price: e.target.value }))}
+                          className="input-field"
+                          placeholder="0.00"
+                        />
                       </div>
                     </div>
+
                     <div className="mt-3 bg-white rounded-xl p-3 flex items-center justify-between">
                       <span className="text-sm text-gray-600">الربح المحسوب تلقائياً:</span>
                       <span className={`text-base font-bold ${profit && parseFloat(profit) >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-                        {profit !== null ? `${profit} ج.م` : '—'}
+                        {profit !== null ? `${profit} ${currencySymbol}` : '—'}
                       </span>
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* ─── TAB: VARIANTS ─── */}
               {activeTab === 'variants' && (
-                <div>
-                  <div className="flex items-center justify-between mb-4">
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
                     <div>
-                      <h3 className="font-bold text-gray-800">أنواع النسخ</h3>
+                      <p className="text-sm font-bold text-gray-700">نسخ الكتاب</p>
                       <p className="text-xs text-gray-400">أضف أكثر من نسخة لنفس الكتاب</p>
                     </div>
-                    <button onClick={() => setVariants(v => [...v, emptyVariant()])} className="btn-primary text-sm flex items-center gap-1.5">
-                      <Plus size={14} /> إضافة نسخة
+                    <button
+                      onClick={() => setVariants((v) => [...v, emptyVariant()])}
+                      className="btn-primary text-sm flex items-center gap-1.5"
+                    >
+                      <Plus size={14} />
+                      إضافة نسخة
                     </button>
                   </div>
 
@@ -783,53 +951,102 @@ export default function Books() {
                         <div key={v._key} className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
                           <div className="flex items-center justify-between mb-3">
                             <div className="flex gap-2">
-                              <select value={v.variant_name}
-                                onChange={e => setVariants(prev => prev.map((x, i) => i === idx ? { ...x, variant_name: e.target.value } : x))}
-                                className="input-field text-sm py-1.5 h-auto w-36">
-                                {VARIANT_NAMES.map(t => <option key={t}>{t}</option>)}
+                              <select
+                                value={v.variant_name}
+                                onChange={(e) =>
+                                  setVariants((prev) =>
+                                    prev.map((x, i) => (i === idx ? { ...x, variant_name: e.target.value } : x))
+                                  )
+                                }
+                                className="input-field text-sm py-1.5 h-auto w-36"
+                              >
+                                {VARIANT_NAMES.map((t) => (
+                                  <option key={t}>{t}</option>
+                                ))}
                               </select>
-                              <select value={v.variant_type}
-                                onChange={e => setVariants(prev => prev.map((x, i) => i === idx ? { ...x, variant_type: e.target.value as 'مادي' | 'رقمي' } : x))}
-                                className="input-field text-sm py-1.5 h-auto w-28">
+
+                              <select
+                                value={v.variant_type}
+                                onChange={(e) =>
+                                  setVariants((prev) =>
+                                    prev.map((x, i) =>
+                                      i === idx
+                                        ? { ...x, variant_type: e.target.value as 'مادي' | 'رقمي' }
+                                        : x
+                                    )
+                                  )
+                                }
+                                className="input-field text-sm py-1.5 h-auto w-28"
+                              >
                                 <option value="مادي">مادي</option>
                                 <option value="رقمي">رقمي</option>
                               </select>
                             </div>
-                            <button onClick={() => setVariants(prev => prev.filter((_, i) => i !== idx))}
-                              className="p-1.5 rounded-lg hover:bg-red-100 text-red-500"><X size={14} /></button>
+
+                            <button
+                              onClick={() => setVariants((prev) => prev.filter((_, i) => i !== idx))}
+                              className="p-1.5 rounded-lg hover:bg-red-100 text-red-500"
+                            >
+                              <X size={14} />
+                            </button>
                           </div>
+
                           <div className="grid grid-cols-2 gap-3">
                             <div>
-                              <label className="text-xs text-gray-500 block mb-1">السعر (ج.م)</label>
-                              <input type="number" value={v.price}
-                                onChange={e => setVariants(prev => prev.map((x, i) => i === idx ? { ...x, price: e.target.value } : x))}
-                                className="input-field text-sm py-1.5 h-auto" />
+                              <label className="text-xs text-gray-500 block mb-1">
+                                السعر ({currencySymbol})
+                              </label>
+                              <input
+                                type="number"
+                                value={v.price}
+                                onChange={(e) =>
+                                  setVariants((prev) =>
+                                    prev.map((x, i) => (i === idx ? { ...x, price: e.target.value } : x))
+                                  )
+                                }
+                                className="input-field text-sm py-1.5 h-auto"
+                              />
                             </div>
+
                             <div>
                               <label className="text-xs text-gray-500 block mb-1">SKU</label>
-                              <input value={v.sku}
-                                onChange={e => setVariants(prev => prev.map((x, i) => i === idx ? { ...x, sku: e.target.value } : x))}
-                                className="input-field text-sm py-1.5 h-auto" placeholder="BOOK-001-A" />
+                              <input
+                                value={v.sku}
+                                onChange={(e) =>
+                                  setVariants((prev) =>
+                                    prev.map((x, i) => (i === idx ? { ...x, sku: e.target.value } : x))
+                                  )
+                                }
+                                className="input-field text-sm py-1.5 h-auto"
+                                placeholder="BOOK-001-A"
+                              />
                             </div>
                           </div>
+
                           {v.variant_type === 'رقمي' && (
                             <div className="mt-3 p-3 bg-purple-50 rounded-xl border border-purple-100">
                               <p className="text-xs font-semibold text-purple-700 mb-2 flex items-center gap-1.5">
-                                <FileText size={13} /> ملف الكتاب الرقمي (PDF / EPUB)
+                                <FileText size={13} />
+                                ملف الكتاب الرقمي (PDF / EPUB)
                               </p>
                               <div className="flex items-center gap-3 flex-wrap">
-                                <button type="button" onClick={() => ebookInputRef.current?.click()}
-                                  className="flex items-center gap-2 px-4 py-2 bg-white border border-purple-200 rounded-xl text-sm text-purple-700 hover:bg-purple-50 transition-colors">
+                                <button
+                                  type="button"
+                                  onClick={() => ebookInputRef.current?.click()}
+                                  className="flex items-center gap-2 px-4 py-2 bg-white border border-purple-200 rounded-xl text-sm text-purple-700 hover:bg-purple-50 transition-colors"
+                                >
                                   <Upload size={14} />
                                   {ebookFile ? ebookFile.name : 'رفع ملف'}
                                 </button>
+
                                 {(ebookFile || ebookPath) && (
                                   <span className="text-xs text-purple-600 font-mono">
                                     {ebookFile ? '✓ ملف جديد' : '✓ ملف مرفوع'}
                                   </span>
                                 )}
                               </div>
-                              <div className="flex gap-3 text-xs text-purple-600 mt-2">
+
+                              <div className="flex gap-3 text-xs text-purple-600 mt-2 flex-wrap">
                                 <span>✓ يباع مرة واحدة لكل عميل</span>
                                 <span>✓ رابط تحميل مؤقت (24 ساعة)</span>
                                 <span>✓ حماية بعلامة مائية</span>
@@ -843,41 +1060,57 @@ export default function Books() {
                 </div>
               )}
 
-              {/* ─── TAB: MEDIA ─── */}
               {activeTab === 'media' && (
                 <div className="space-y-5">
-                  {/* Cover Image (single, quick upload) */}
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">
                       صورة الغلاف الرئيسية
                     </label>
+
                     <div className="flex gap-4 items-start">
                       <div className="w-24 h-32 rounded-xl overflow-hidden bg-gray-100 flex items-center justify-center flex-shrink-0 border border-gray-200">
                         {coverPreview || form.cover_url ? (
-                          <img src={coverPreview || form.cover_url} alt="غلاف"
+                          <img
+                            src={coverPreview || form.cover_url}
+                            alt="غلاف"
                             className="w-full h-full object-cover"
-                            onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).style.display = 'none';
+                            }}
+                          />
                         ) : (
                           <BookOpen size={24} className="text-gray-300" />
                         )}
                       </div>
+
                       <div className="flex-1 space-y-3">
-                        <button type="button" onClick={() => coverInputRef.current?.click()}
-                          className="flex items-center gap-2 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700 hover:bg-blue-100 transition-colors w-full justify-center">
+                        <button
+                          type="button"
+                          onClick={() => coverInputRef.current?.click()}
+                          className="flex items-center gap-2 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded-xl text-sm text-blue-700 hover:bg-blue-100 transition-colors w-full justify-center"
+                        >
                           <Upload size={15} />
                           {coverFile ? `تم اختيار: ${coverFile.name}` : 'رفع صورة الغلاف'}
                         </button>
+
                         <div>
-                          <label className="block text-xs font-semibold text-gray-500 mb-1">أو أدخل رابط الصورة</label>
-                          <input value={form.cover_url} onChange={e => setForm(f => ({ ...f, cover_url: e.target.value }))}
-                            className="input-field text-sm py-2 h-auto" placeholder="https://..." dir="ltr" />
+                          <label className="block text-xs font-semibold text-gray-500 mb-1">
+                            أو أدخل رابط الصورة
+                          </label>
+                          <input
+                            value={form.cover_url}
+                            onChange={(e) => setForm((f) => ({ ...f, cover_url: e.target.value }))}
+                            className="input-field text-sm py-2 h-auto"
+                            placeholder="https://..."
+                            dir="ltr"
+                          />
                         </div>
+
                         <p className="text-xs text-gray-400">JPG، PNG، WEBP — حتى 5MB</p>
                       </div>
                     </div>
                   </div>
 
-                  {/* Multi-image gallery — only for existing products */}
                   {editProduct ? (
                     <div>
                       <div className="flex items-center gap-2 mb-3">
@@ -885,9 +1118,10 @@ export default function Books() {
                         <label className="text-sm font-semibold text-gray-700">معرض صور المنتج</label>
                         <span className="text-xs text-gray-400">(يمكن رفع أكثر من صورة)</span>
                       </div>
+
                       <ImageGallery
                         productId={editProduct.id}
-                        onNewCoverUrl={(url) => setForm(f => ({ ...f, cover_url: url }))}
+                        onNewCoverUrl={(url) => setForm((f) => ({ ...f, cover_url: url }))}
                       />
                     </div>
                   ) : (
@@ -899,33 +1133,57 @@ export default function Books() {
                     </div>
                   )}
 
-                  {/* Digital file note */}
                   <div className="bg-purple-50 rounded-2xl p-4 flex items-start gap-3">
                     <FileText size={16} className="text-purple-600 flex-shrink-0 mt-0.5" />
                     <div>
                       <p className="text-sm font-semibold text-purple-800">ملفات الكتب الرقمية</p>
-                      <p className="text-xs text-purple-600 mt-0.5">يتم رفع ملفات PDF/EPUB من تبويب "أنواع النسخ" عند اختيار نوع "رقمي".</p>
+                      <p className="text-xs text-purple-600 mt-0.5">
+                        يتم رفع ملفات PDF/EPUB من تبويب "أنواع النسخ" عند اختيار نوع "رقمي".
+                      </p>
                     </div>
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Footer */}
             <div className="flex items-center justify-between px-6 py-4 border-t border-gray-100 bg-gray-50/50 rounded-b-3xl">
-              <button onClick={() => setShowModal(false)} className="btn-secondary">إلغاء</button>
-              <button onClick={handleSave} disabled={isBusy} className="btn-primary flex items-center gap-2 disabled:opacity-60">
-                {isBusy ? <Loader2 size={15} className="animate-spin" /> : (editProduct ? <Edit size={15} /> : <Plus size={15} />)}
-                {isBusy ? 'جارٍ الحفظ...' : (editProduct ? 'حفظ التعديلات' : 'إضافة الكتاب')}
+              <button onClick={() => setShowModal(false)} className="btn-secondary">
+                إلغاء
+              </button>
+
+              <button
+                onClick={handleSave}
+                disabled={isBusy}
+                className="btn-primary flex items-center gap-2 disabled:opacity-60"
+              >
+                {isBusy ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : editProduct ? (
+                  <Edit size={15} />
+                ) : (
+                  <Plus size={15} />
+                )}
+                {isBusy ? 'جارٍ الحفظ...' : editProduct ? 'حفظ التعديلات' : 'إضافة الكتاب'}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Hidden file inputs */}
-      <input ref={coverInputRef} type="file" accept="image/*" className="hidden" onChange={handleCoverSelect} />
-      <input ref={ebookInputRef} type="file" accept=".pdf,.epub,.mobi" className="hidden" onChange={handleEbookSelect} />
+      <input
+        ref={coverInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={handleCoverSelect}
+      />
+      <input
+        ref={ebookInputRef}
+        type="file"
+        accept=".pdf,.epub,.mobi"
+        className="hidden"
+        onChange={handleEbookSelect}
+      />
     </Layout>
   );
 }
