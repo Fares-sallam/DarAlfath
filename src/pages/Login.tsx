@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLogo } from '@/contexts/LogoContext';
 import { useAuth } from '@/contexts/AuthContext';
@@ -46,6 +46,9 @@ export default function Login() {
   const { logoUrl } = useLogo();
   const { user, loading: authLoading } = useAuth();
 
+  const emailInputRef = useRef<HTMLInputElement | null>(null);
+  const passwordInputRef = useRef<HTMLInputElement | null>(null);
+
   const [step, setStep] = useState<Step>('emailPassword');
   const [mode, setMode] = useState<Mode>('login');
 
@@ -70,21 +73,38 @@ export default function Login() {
     }
   }, [user, authLoading, mode, step, navigate]);
 
+  const getEffectiveEmail = () =>
+    (emailInputRef.current?.value || email || '').trim().toLowerCase();
+
+  const getEffectivePassword = () =>
+    passwordInputRef.current?.value || password || '';
+
   /* ──────────────────────────────────────────
      Normal login
   ────────────────────────────────────────── */
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!email || !password) return;
 
+    const formData = new FormData(e.currentTarget);
+    const formEmail = String(formData.get('email') ?? '');
+    const formPassword = String(formData.get('password') ?? '');
+
+    const rawEmail = (formEmail || getEffectiveEmail()).trim().toLowerCase();
+    const rawPassword = formPassword || getEffectivePassword();
+
+    if (!rawEmail || !rawPassword) {
+      toast.error('أدخل البريد الإلكتروني وكلمة المرور');
+      return;
+    }
+
+    setEmail(rawEmail);
+    setPassword(rawPassword);
     setLoading(true);
 
     try {
-      const normalizedEmail = email.trim().toLowerCase();
-
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: normalizedEmail,
-        password,
+        email: rawEmail,
+        password: rawPassword,
       });
 
       if (error) {
@@ -98,7 +118,7 @@ export default function Login() {
           const { data: exists, error: rpcError } = await supabase.rpc(
             'check_admin_email_exists',
             {
-              p_email: normalizedEmail,
+              p_email: rawEmail,
             }
           );
 
@@ -145,7 +165,6 @@ export default function Login() {
       }
 
       toast.success('تم تسجيل الدخول بنجاح');
-      // لا نعمل navigate هنا، ننتظر AuthContext
     } catch (err) {
       console.error('[Login] unexpected error:', err);
       toast.error('خطأ في الاتصال، تحقق من الإنترنت');
@@ -158,13 +177,14 @@ export default function Login() {
      Send OTP / Recovery code
   ────────────────────────────────────────── */
   const handleSendOtp = async () => {
-    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedEmail = getEffectiveEmail();
 
     if (!normalizedEmail) {
       toast.error('أدخل بريدك الإلكتروني أولاً');
       return;
     }
 
+    setEmail(normalizedEmail);
     setLoading(true);
 
     try {
@@ -211,7 +231,6 @@ export default function Login() {
         return;
       }
 
-      // First time login flow
       const { error } = await supabase.auth.signInWithOtp({
         email: normalizedEmail,
         options: {
@@ -274,7 +293,7 @@ export default function Login() {
         mode === 'forgotPassword' ? 'recovery' : 'email';
 
       const { error } = await supabase.auth.verifyOtp({
-        email: email.trim().toLowerCase(),
+        email: getEffectiveEmail(),
         token,
         type: verificationType,
       });
@@ -394,13 +413,14 @@ export default function Login() {
   };
 
   const steps: Step[] =
-    mode === 'login' ? ['emailPassword'] : ['emailPassword', 'otp', 'setPassword'];
+    mode === 'login'
+      ? ['emailPassword']
+      : ['emailPassword', 'otp', 'setPassword'];
 
   const currentIdx = steps.indexOf(step);
 
   return (
     <div className="min-h-screen flex" dir="rtl">
-      {/* Left decorative panel */}
       <div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-[#0B1F4D] via-[#102A66] to-[#16377A] items-center justify-center p-12 relative overflow-hidden">
         <div className="absolute top-0 left-0 w-64 h-64 rounded-full bg-white/5 -translate-x-1/2 -translate-y-1/2" />
         <div className="absolute bottom-0 right-0 w-96 h-96 rounded-full bg-white/5 translate-x-1/3 translate-y-1/3" />
@@ -442,10 +462,8 @@ export default function Login() {
         </div>
       </div>
 
-      {/* Right form panel */}
       <div className="flex-1 flex items-center justify-center bg-gray-50 p-6">
         <div className="w-full max-w-md">
-          {/* Mobile logo */}
           <div className="lg:hidden text-center mb-8">
             <div className="w-16 h-16 rounded-2xl bg-[#0B1F4D] flex items-center justify-center mx-auto mb-3 overflow-hidden">
               {logoUrl ? (
@@ -492,14 +510,17 @@ export default function Login() {
                 </div>
 
                 {mode === 'login' && (
-                  <form onSubmit={handleLogin} className="space-y-5">
+                  <form onSubmit={handleLogin} className="space-y-5" autoComplete="on">
                     <div>
                       <label className="block text-sm font-semibold text-gray-700 mb-2">
                         البريد الإلكتروني
                       </label>
                       <div className="relative">
                         <input
+                          ref={emailInputRef}
                           type="email"
+                          name="email"
+                          autoComplete="email"
                           value={email}
                           onChange={(e) => setEmail(e.target.value)}
                           placeholder="admin@darelfath.com"
@@ -521,7 +542,10 @@ export default function Login() {
                       </label>
                       <div className="relative">
                         <input
+                          ref={passwordInputRef}
                           type={showPw ? 'text' : 'password'}
+                          name="password"
+                          autoComplete="current-password"
                           value={password}
                           onChange={(e) => setPassword(e.target.value)}
                           placeholder="••••••••"
@@ -545,7 +569,7 @@ export default function Login() {
 
                     <button
                       type="submit"
-                      disabled={loading || authLoading || !email || !password}
+                      disabled={loading || authLoading}
                       className="w-full h-12 bg-[#0B1F4D] hover:bg-[#162d6e] disabled:opacity-60 text-white font-bold rounded-2xl flex items-center justify-center gap-2 transition-colors"
                     >
                       {loading || authLoading ? (
@@ -592,7 +616,10 @@ export default function Login() {
                       </label>
                       <div className="relative">
                         <input
+                          ref={emailInputRef}
                           type="email"
+                          name="email"
+                          autoComplete="email"
                           value={email}
                           onChange={(e) => setEmail(e.target.value)}
                           placeholder="admin@darelfath.com"
@@ -611,7 +638,7 @@ export default function Login() {
                     <button
                       type="button"
                       onClick={handleSendOtp}
-                      disabled={loading || !email}
+                      disabled={loading}
                       className="w-full h-12 bg-[#0B1F4D] hover:bg-[#162d6e] disabled:opacity-60 text-white font-bold rounded-2xl flex items-center justify-center gap-2 transition-colors"
                     >
                       {loading ? (
@@ -769,6 +796,7 @@ export default function Login() {
                         placeholder="8 أحرف على الأقل"
                         required
                         autoFocus
+                        autoComplete="new-password"
                         className="w-full h-12 pr-11 pl-10 rounded-2xl border-2 border-gray-200 bg-gray-50 text-sm focus:outline-none focus:border-purple-500 transition-colors"
                         dir="ltr"
                       />
@@ -815,6 +843,7 @@ export default function Login() {
                         onChange={(e) => setConfirmPw(e.target.value)}
                         placeholder="أعد إدخال كلمة المرور"
                         required
+                        autoComplete="new-password"
                         className={`w-full h-12 pr-11 pl-10 rounded-2xl border-2 bg-gray-50 text-sm focus:outline-none transition-colors ${
                           confirmPw && newPw !== confirmPw
                             ? 'border-red-400'
