@@ -1,5 +1,86 @@
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/lib/supabase';
+import { useCountry } from '@/contexts/CountryContext';
+
+/* ── Types ── */
+type SelectedCountryLite = {
+  id: string;
+  name: string;
+  code: string;
+  currency: string;
+  currency_symbol: string;
+};
+
+type OrderLite = {
+  id: string;
+  user_id?: string | null;
+  total_price: number;
+  status: string;
+  created_at: string;
+  country?: string | null;
+  shipping_address?: {
+    city?: string;
+    country?: string;
+  } | null;
+  profiles?: {
+    full_name?: string;
+    avatar_url?: string;
+  } | null;
+};
+
+function normalizeText(value?: string | null) {
+  return (value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function orderMatchesCountry(
+  order: OrderLite,
+  selectedCountry: SelectedCountryLite | null
+) {
+  if (!selectedCountry) return true;
+
+  const selectedName = normalizeText(selectedCountry.name);
+  const selectedCode = normalizeText(selectedCountry.code);
+
+  const orderCountry = normalizeText(order.country);
+  const shippingCountry = normalizeText(order.shipping_address?.country);
+
+  const candidates = [orderCountry, shippingCountry].filter(Boolean);
+
+  if (candidates.length === 0) {
+    return true;
+  }
+
+  return candidates.some(
+    (candidate) => candidate === selectedName || candidate === selectedCode
+  );
+}
+
+async function fetchOrdersForDashboard(
+  limit?: number,
+  fromIso?: string
+): Promise<OrderLite[]> {
+  let query = supabase
+    .from('orders')
+    .select(`
+      id,
+      user_id,
+      total_price,
+      status,
+      created_at,
+      country,
+      shipping_address,
+      profiles(full_name, avatar_url)
+    `)
+    .order('created_at', { ascending: false });
+
+  if (fromIso) query = query.gte('created_at', fromIso);
+  if (limit) query = query.limit(limit);
+
+  const { data, error } = await query;
+  if (error) throw error;
+
+  return (data ?? []) as OrderLite[];
+}
 
 /* ── Books summary stats ── */
 export interface BookStats {
@@ -11,22 +92,87 @@ export interface BookStats {
   both: number;
 }
 
+async function fetchScopedProductIds(selectedCountry: SelectedCountryLite | null): Promise<string[] | null> {
+  if (!selectedCountry) return null;
+
+  const tryWithCountry = await supabase
+    .from('product_inventory')
+    .select('product_id, stock, country_id');
+
+  if (!tryWithCountry.error) {
+    const rows = (tryWithCountry.data ?? []) as {
+      product_id: string;
+      stock: number;
+      country_id?: string | null;
+    }[];
+
+    return Array.from(
+      new Set(
+        rows
+          .filter((r) => r.country_id === selectedCountry.id && (r.stock ?? 0) > 0)
+          .map((r) => r.product_id)
+      )
+    );
+  }
+
+  const tryWithoutCountry = await supabase
+    .from('product_inventory')
+    .select('product_id, stock');
+
+  if (!tryWithoutCountry.error) {
+    return null;
+  }
+
+  return null;
+}
+
 export function useBookStats() {
+  const { selectedCountry } = useCountry();
+
   return useQuery({
-    queryKey: ['dashboard', 'book-stats'],
+    queryKey: ['dashboard', 'book-stats', selectedCountry?.id ?? 'all'],
     queryFn: async (): Promise<BookStats> => {
-      const { data, error } = await supabase
-        .from('products')
-        .select('is_active, type');
+      const productIds = await fetchScopedProductIds(
+        selectedCountry
+          ? {
+              id: selectedCountry.id,
+              name: selectedCountry.name,
+              code: selectedCountry.code,
+              currency: selectedCountry.currency,
+              currency_symbol: selectedCountry.currency_symbol,
+            }
+          : null
+      );
+
+      if (Array.isArray(productIds) && productIds.length === 0) {
+        return {
+          total: 0,
+          active: 0,
+          inactive: 0,
+          digital: 0,
+          paper: 0,
+          both: 0,
+        };
+      }
+
+      let query = supabase.from('products').select('id, is_active, type');
+
+      if (Array.isArray(productIds) && productIds.length > 0) {
+        query = query.in('id', productIds);
+      }
+
+      const { data, error } = await query;
       if (error) throw error;
-      const rows = (data ?? []) as { is_active: boolean; type: string }[];
+
+      const rows = (data ?? []) as { id: string; is_active: boolean; type: string }[];
+
       return {
         total: rows.length,
-        active: rows.filter(r => r.is_active).length,
-        inactive: rows.filter(r => !r.is_active).length,
-        digital: rows.filter(r => r.type === 'رقمي').length,
-        paper: rows.filter(r => r.type === 'ورقي').length,
-        both: rows.filter(r => r.type === 'ورقي ورقمي').length,
+        active: rows.filter((r) => r.is_active).length,
+        inactive: rows.filter((r) => !r.is_active).length,
+        digital: rows.filter((r) => r.type === 'رقمي').length,
+        paper: rows.filter((r) => r.type === 'ورقي').length,
+        both: rows.filter((r) => r.type === 'ورقي ورقمي').length,
       };
     },
   });
@@ -44,44 +190,73 @@ export interface TopSellingBook {
 }
 
 export function useTopSellingBooks(limit = 5) {
+  const { selectedCountry } = useCountry();
+
   return useQuery({
-    queryKey: ['dashboard', 'top-selling', limit],
+    queryKey: ['dashboard', 'top-selling', limit, selectedCountry?.id ?? 'all'],
     queryFn: async (): Promise<TopSellingBook[]> => {
       const from = new Date();
       from.setDate(from.getDate() - 30);
 
-      // Step 1: Get valid order IDs in the last 30 days
-      const { data: validOrders, error: ordErr } = await supabase
-        .from('orders')
-        .select('id')
-        .gte('created_at', from.toISOString())
-        .not('status', 'in', '("ملغي","مرتجع")');
+      const allOrders = await fetchOrdersForDashboard(undefined, from.toISOString());
+      const validOrders = allOrders.filter(
+        (o) =>
+          o.status !== 'ملغي' &&
+          o.status !== 'مرتجع' &&
+          orderMatchesCountry(
+            o,
+            selectedCountry
+              ? {
+                  id: selectedCountry.id,
+                  name: selectedCountry.name,
+                  code: selectedCountry.code,
+                  currency: selectedCountry.currency,
+                  currency_symbol: selectedCountry.currency_symbol,
+                }
+              : null
+          )
+      );
 
-      if (ordErr) throw ordErr;
-      if (!validOrders || validOrders.length === 0) return [];
+      if (validOrders.length === 0) return [];
 
-      const orderIds = validOrders.map((o: { id: string }) => o.id);
+      const orderIds = validOrders.map((o) => o.id);
 
-      // Step 2: Get items for those orders
       const { data, error } = await supabase
         .from('order_items')
-        .select('quantity, price_per_item, products(id, title, author, cover_url, type)')
+        .select('quantity, price_per_item, products(id, title, author, cover_url, type), order_id')
         .in('order_id', orderIds);
 
       if (error) throw error;
 
       const map: Record<string, TopSellingBook> = {};
+
       for (const item of (data ?? []) as {
         quantity: number;
         price_per_item: number;
-        products: { id: string; title: string; author: string; cover_url?: string; type: string } | null;
-        orders: unknown;
+        order_id: string;
+        products: {
+          id: string;
+          title: string;
+          author: string;
+          cover_url?: string;
+          type: string;
+        } | null;
       }[]) {
         const p = item.products;
         if (!p) continue;
+
         if (!map[p.id]) {
-          map[p.id] = { productId: p.id, title: p.title, author: p.author, cover_url: p.cover_url, totalSold: 0, totalRevenue: 0, type: p.type };
+          map[p.id] = {
+            productId: p.id,
+            title: p.title,
+            author: p.author,
+            cover_url: p.cover_url,
+            totalSold: 0,
+            totalRevenue: 0,
+            type: p.type,
+          };
         }
+
         map[p.id].totalSold += item.quantity;
         map[p.id].totalRevenue += item.price_per_item * item.quantity;
       }
@@ -127,29 +302,45 @@ export function useRecentAuditLogs(limit = 10) {
 /* ── Orders summary ── */
 export interface OrderSummary {
   id: string;
-  user_id?: string;
+  user_id?: string | null;
   total_price: number;
   status: string;
   created_at: string;
-  shipping_address?: { city?: string };
+  country?: string | null;
+  shipping_address?: { city?: string; country?: string };
   profiles?: { full_name?: string; avatar_url?: string };
+  currencySymbol?: string;
 }
 
 export function useRecentOrders(limit = 5) {
-  return useQuery({
-    queryKey: ['dashboard', 'recent-orders', limit],
-    queryFn: async (): Promise<OrderSummary[]> => {
-      const { data, error } = await supabase
-        .from('orders')
-        .select(`
-          id, user_id, total_price, status, created_at, shipping_address,
-          profiles(full_name, avatar_url)
-        `)
-        .order('created_at', { ascending: false })
-        .limit(limit);
+  const { selectedCountry, currencySymbol } = useCountry();
 
-      if (error) throw error;
-      return (data ?? []) as OrderSummary[];
+  return useQuery({
+    queryKey: ['dashboard', 'recent-orders', limit, selectedCountry?.id ?? 'all'],
+    queryFn: async (): Promise<OrderSummary[]> => {
+      const rows = await fetchOrdersForDashboard(100);
+
+      const filtered = rows
+        .filter((row) =>
+          orderMatchesCountry(
+            row,
+            selectedCountry
+              ? {
+                  id: selectedCountry.id,
+                  name: selectedCountry.name,
+                  code: selectedCountry.code,
+                  currency: selectedCountry.currency,
+                  currency_symbol: selectedCountry.currency_symbol,
+                }
+              : null
+          )
+        )
+        .slice(0, limit);
+
+      return filtered.map((row) => ({
+        ...row,
+        currencySymbol,
+      }));
     },
   });
 }
@@ -160,41 +351,59 @@ export interface DashboardKpi {
   totalOrders: number;
   totalCustomers: number;
   pendingOrders: number;
+  currencyCode: string;
+  currencySymbol: string;
+  countryName: string | null;
 }
 
 export function useDashboardKpi() {
+  const { selectedCountry } = useCountry();
+
   return useQuery({
-    queryKey: ['dashboard', 'kpi'],
-    staleTime: 2 * 60_000, // 2 min cache
+    queryKey: ['dashboard', 'kpi', selectedCountry?.id ?? 'all'],
+    staleTime: 2 * 60_000,
     queryFn: async (): Promise<DashboardKpi> => {
       const thisMonth = new Date();
       thisMonth.setDate(1);
       thisMonth.setHours(0, 0, 0, 0);
 
-      const [ordersRes, customersRes, pendingRes] = await Promise.all([
-        // Use head+count for revenue to avoid fetching all rows
-        supabase
-          .from('orders')
-          .select('total_price')
-          .gte('created_at', thisMonth.toISOString())
-          .not('status', 'in', '("ملغي","مرتجع")')
-          .limit(500), // safety cap
-        supabase
-          .from('profiles')
-          .select('id', { count: 'exact', head: true })
-          .eq('role', 'user'),
-        supabase
-          .from('orders')
-          .select('id', { count: 'exact', head: true })
-          .in('status', ['جديد', 'قيد المراجعة', 'تم التأكيد']),
-      ]);
+      const orders = await fetchOrdersForDashboard(undefined, thisMonth.toISOString());
 
-      const orders = (ordersRes.data ?? []) as { total_price: number }[];
+      const filteredOrders = orders.filter((o) =>
+        orderMatchesCountry(
+          o,
+          selectedCountry
+            ? {
+                id: selectedCountry.id,
+                name: selectedCountry.name,
+                code: selectedCountry.code,
+                currency: selectedCountry.currency,
+                currency_symbol: selectedCountry.currency_symbol,
+              }
+            : null
+        )
+      );
+
+      const validOrders = filteredOrders.filter(
+        (o) => o.status !== 'ملغي' && o.status !== 'مرتجع'
+      );
+
+      const pendingOrders = filteredOrders.filter((o) =>
+        ['جديد', 'قيد المراجعة', 'تم التأكيد'].includes(o.status)
+      ).length;
+
+      const uniqueCustomers = new Set(
+        validOrders.map((o) => o.user_id).filter(Boolean)
+      ).size;
+
       return {
-        totalRevenue: orders.reduce((s, o) => s + o.total_price, 0),
-        totalOrders: orders.length,
-        totalCustomers: customersRes.count ?? 0,
-        pendingOrders: pendingRes.count ?? 0,
+        totalRevenue: validOrders.reduce((s, o) => s + o.total_price, 0),
+        totalOrders: validOrders.length,
+        totalCustomers: uniqueCustomers,
+        pendingOrders,
+        currencyCode: selectedCountry?.currency ?? 'EGP',
+        currencySymbol: selectedCountry?.currency_symbol ?? 'ج.م',
+        countryName: selectedCountry?.name ?? null,
       };
     },
   });

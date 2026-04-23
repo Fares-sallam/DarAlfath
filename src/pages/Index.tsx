@@ -2,36 +2,55 @@ import { useNavigate } from 'react-router-dom';
 import Layout from '@/components/layout/Layout';
 import ChartsSection from '@/components/features/ChartsSection';
 import {
-  BookOpen, ShoppingCart, Users, Clock, TrendingUp, Package,
-  Edit, Trash2, FileText, LogIn, LogOut, Plus, BarChart2,
-  Loader2, AlertCircle, ArrowLeft, RefreshCw
+  BookOpen,
+  ShoppingCart,
+  Users,
+  Clock,
+  TrendingUp,
+  Package,
+  Edit,
+  Trash2,
+  FileText,
+  LogIn,
+  LogOut,
+  Plus,
+  BarChart2,
+  Loader2,
+  AlertCircle,
+  ArrowLeft,
+  RefreshCw,
+  Globe2,
 } from 'lucide-react';
 import {
-  useBookStats, useTopSellingBooks, useRecentAuditLogs,
-  useRecentOrders, useDashboardKpi
+  useBookStats,
+  useTopSellingBooks,
+  useRecentAuditLogs,
+  useRecentOrders,
+  useDashboardKpi,
 } from '@/hooks/useDashboard';
 import { useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
+import { useCountry } from '@/contexts/CountryContext';
 
 /* ── Status config ── */
 const statusConfig: Record<string, { label: string; cls: string }> = {
-  'جديد': { label: 'جديد', cls: 'bg-cyan-100 text-cyan-700' },
+  جديد: { label: 'جديد', cls: 'bg-cyan-100 text-cyan-700' },
   'قيد المراجعة': { label: 'قيد المراجعة', cls: 'bg-yellow-100 text-yellow-700' },
   'قيد المعالجة': { label: 'قيد المعالجة', cls: 'bg-blue-100 text-blue-700' },
   'تم التأكيد': { label: 'تم التأكيد', cls: 'bg-blue-100 text-blue-700' },
   'جاري الشحن': { label: 'جاري الشحن', cls: 'bg-indigo-100 text-indigo-700' },
   'تم التوصيل': { label: 'تم التوصيل', cls: 'bg-green-100 text-green-700' },
-  'ملغي': { label: 'ملغي', cls: 'bg-red-100 text-red-500' },
-  'مرتجع': { label: 'مرتجع', cls: 'bg-orange-100 text-orange-600' },
+  ملغي: { label: 'ملغي', cls: 'bg-red-100 text-red-500' },
+  مرتجع: { label: 'مرتجع', cls: 'bg-orange-100 text-orange-600' },
 };
 
 /* ── Action config for audit log ── */
 const actionConfig: Record<string, { icon: React.ReactNode; cls: string }> = {
-  'INSERT': { icon: <Plus size={13} />, cls: 'bg-green-100 text-green-700' },
-  'UPDATE': { icon: <Edit size={13} />, cls: 'bg-amber-100 text-amber-700' },
-  'DELETE': { icon: <Trash2 size={13} />, cls: 'bg-red-100 text-red-600' },
-  'LOGIN': { icon: <LogIn size={13} />, cls: 'bg-blue-100 text-blue-700' },
-  'LOGOUT': { icon: <LogOut size={13} />, cls: 'bg-gray-100 text-gray-600' },
+  INSERT: { icon: <Plus size={13} />, cls: 'bg-green-100 text-green-700' },
+  UPDATE: { icon: <Edit size={13} />, cls: 'bg-amber-100 text-amber-700' },
+  DELETE: { icon: <Trash2 size={13} />, cls: 'bg-red-100 text-red-600' },
+  LOGIN: { icon: <LogIn size={13} />, cls: 'bg-blue-100 text-blue-700' },
+  LOGOUT: { icon: <LogOut size={13} />, cls: 'bg-gray-100 text-gray-600' },
 };
 
 const tableArabic: Record<string, string> = {
@@ -48,10 +67,15 @@ const tableArabic: Record<string, string> = {
 
 function formatDate(iso: string) {
   const d = new Date(iso);
-  return d.toLocaleString('ar-EG', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleString('ar-EG', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
-function formatCurrency(n: number) {
+function formatCurrencyCompact(n: number) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return n.toLocaleString();
@@ -61,16 +85,19 @@ function formatCurrency(n: number) {
 /* ── KPI Cards (live from Supabase) ── */
 function KpiCards() {
   const navigate = useNavigate();
+  const { currencySymbol } = useCountry();
   const { data: kpi, isLoading } = useDashboardKpi();
   const { data: books, isLoading: booksLoading } = useBookStats();
+
+  const activeCurrencySymbol = kpi?.currencySymbol ?? currencySymbol;
 
   const cards = [
     {
       label: 'إيرادات الشهر',
-      value: kpi ? `${formatCurrency(kpi.totalRevenue)} ج.م` : '—',
+      value: kpi ? `${formatCurrencyCompact(kpi.totalRevenue)} ${activeCurrencySymbol}` : '—',
       icon: <TrendingUp size={20} className="text-green-600" />,
       bg: 'bg-green-50',
-      sub: 'الطلبات المكتملة',
+      sub: kpi?.countryName ? `الدولة: ${kpi.countryName}` : 'الطلبات المكتملة',
       route: '/analytics',
       hoverRing: 'hover:ring-green-300',
     },
@@ -88,7 +115,7 @@ function KpiCards() {
       value: kpi ? kpi.totalCustomers.toLocaleString() : '—',
       icon: <Users size={20} className="text-purple-600" />,
       bg: 'bg-purple-50',
-      sub: 'عملاء مسجلون',
+      sub: 'عملاء الدولة الحالية',
       route: '/customers',
       hoverRing: 'hover:ring-purple-300',
     },
@@ -114,13 +141,18 @@ function KpiCards() {
           className={`bg-white rounded-2xl p-5 shadow-sm text-right w-full transition-all hover:shadow-md hover:ring-2 ${c.hoverRing} group cursor-pointer`}
         >
           <div className="flex items-center justify-between mb-3">
-            <div className={`w-10 h-10 ${c.bg} rounded-xl flex items-center justify-center transition-transform group-hover:scale-110`}>{c.icon}</div>
+            <div className={`w-10 h-10 ${c.bg} rounded-xl flex items-center justify-center transition-transform group-hover:scale-110`}>
+              {c.icon}
+            </div>
             <ArrowLeft size={14} className="text-gray-300 group-hover:text-gray-500 transition-colors" />
           </div>
-          {loading
-            ? <div className="h-8 bg-gray-100 rounded-lg animate-pulse w-28 mb-1" />
-            : <p className="text-2xl font-black text-gray-800">{c.value}</p>
-          }
+
+          {loading ? (
+            <div className="h-8 bg-gray-100 rounded-lg animate-pulse w-28 mb-1" />
+          ) : (
+            <p className="text-2xl font-black text-gray-800">{c.value}</p>
+          )}
+
           <p className="text-sm text-gray-500 mt-0.5">{c.label}</p>
           {c.sub && <p className="text-xs text-blue-600 font-semibold mt-1">{c.sub}</p>}
         </button>
@@ -133,6 +165,7 @@ function KpiCards() {
 /* ── Recent Orders (live) ── */
 function RecentOrders() {
   const navigate = useNavigate();
+  const { currencySymbol } = useCountry();
   const { data: orders = [], isLoading, isError } = useRecentOrders(6);
 
   return (
@@ -140,7 +173,7 @@ function RecentOrders() {
       <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
         <div>
           <h3 className="font-bold text-gray-800">آخر الطلبات</h3>
-          <p className="text-xs text-gray-400 mt-0.5">أحدث الطلبات الواردة من قاعدة البيانات</p>
+          <p className="text-xs text-gray-400 mt-0.5">أحدث طلبات الدولة الحالية من قاعدة البيانات</p>
         </div>
         <button onClick={() => navigate('/orders')} className="btn-primary text-xs flex items-center gap-1.5">
           عرض الكل <ArrowLeft size={12} />
@@ -149,19 +182,22 @@ function RecentOrders() {
 
       {isLoading && (
         <div className="flex items-center justify-center py-12 gap-2 text-gray-400">
-          <Loader2 size={20} className="animate-spin" /><span className="text-sm">جارٍ التحميل...</span>
+          <Loader2 size={20} className="animate-spin" />
+          <span className="text-sm">جارٍ التحميل...</span>
         </div>
       )}
+
       {isError && (
         <div className="flex items-center justify-center py-12 gap-2 text-red-400">
-          <AlertCircle size={18} /><span className="text-sm">تعذّر تحميل الطلبات</span>
+          <AlertCircle size={18} />
+          <span className="text-sm">تعذّر تحميل الطلبات</span>
         </div>
       )}
 
       {!isLoading && !isError && orders.length === 0 && (
         <div className="text-center py-12 text-gray-400">
           <ShoppingCart size={32} className="text-gray-200 mx-auto mb-2" />
-          <p className="text-sm">لا توجد طلبات بعد</p>
+          <p className="text-sm">لا توجد طلبات لهذه الدولة بعد</p>
         </div>
       )}
 
@@ -178,14 +214,18 @@ function RecentOrders() {
                 <th className="text-right px-6 py-3 font-semibold">التاريخ</th>
               </tr>
             </thead>
+
             <tbody>
-              {orders.map(order => {
+              {orders.map((order) => {
                 const status = statusConfig[order.status];
                 const name = order.profiles?.full_name ?? 'زائر';
                 const city = order.shipping_address?.city ?? '—';
+                const activeCurrencySymbol = order.currencySymbol ?? currencySymbol;
+
                 return (
                   <tr key={order.id} className="table-row">
                     <td className="px-6 py-3 text-sm font-bold text-blue-700">{order.id}</td>
+
                     <td className="px-6 py-3">
                       <div className="flex items-center gap-2">
                         {order.profiles?.avatar_url ? (
@@ -198,13 +238,18 @@ function RecentOrders() {
                         <span className="text-sm font-semibold text-gray-800">{name}</span>
                       </div>
                     </td>
+
                     <td className="px-6 py-3 text-sm text-gray-500">{city}</td>
-                    <td className="px-6 py-3 text-sm font-bold text-gray-800">{order.total_price.toLocaleString()} ج.م</td>
+                    <td className="px-6 py-3 text-sm font-bold text-gray-800">
+                      {order.total_price.toLocaleString()} {activeCurrencySymbol}
+                    </td>
+
                     <td className="px-6 py-3">
                       <span className={`status-badge ${status?.cls ?? 'bg-gray-100 text-gray-500'}`}>
                         {status?.label ?? order.status}
                       </span>
                     </td>
+
                     <td className="px-6 py-3 text-xs text-gray-400">{formatDate(order.created_at)}</td>
                   </tr>
                 );
@@ -226,26 +271,24 @@ function BooksPanel() {
 
   return (
     <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-      {/* Header */}
       <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
         <div>
           <h3 className="font-bold text-gray-800 flex items-center gap-2">
             <BookOpen size={16} className="text-blue-700" />
             لوحة إدارة الكتب
           </h3>
-          <p className="text-xs text-gray-400 mt-0.5">إحصائيات المخزون وأكثر الكتب مبيعاً هذا الشهر</p>
+          <p className="text-xs text-gray-400 mt-0.5">إحصائيات الكتب والأكثر مبيعاً في الدولة الحالية</p>
         </div>
         <button onClick={() => navigate('/books')} className="btn-primary text-xs flex items-center gap-1.5">
           إدارة الكتب <ArrowLeft size={12} />
         </button>
       </div>
 
-      {/* Stats row */}
       <div className="grid grid-cols-3 divide-x divide-x-reverse divide-gray-100 border-b border-gray-100">
         {[
-          { label: 'إجمالي الكتب', value: stats?.total ?? '—', color: 'text-blue-700', route: '/books', q: '' },
-          { label: 'نشط', value: stats?.active ?? '—', color: 'text-green-600', route: '/books', q: '' },
-          { label: 'رقمي', value: stats?.digital ?? '—', color: 'text-purple-600', route: '/books', q: '' },
+          { label: 'إجمالي الكتب', value: stats?.total ?? '—', color: 'text-blue-700', route: '/books' },
+          { label: 'نشط', value: stats?.active ?? '—', color: 'text-green-600', route: '/books' },
+          { label: 'رقمي', value: stats?.digital ?? '—', color: 'text-purple-600', route: '/books' },
         ].map((s, i) => (
           <button
             key={i}
@@ -260,9 +303,9 @@ function BooksPanel() {
         ))}
       </div>
 
-      {/* Top books */}
       <div className="p-5">
         <p className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">الأكثر مبيعاً هذا الشهر</p>
+
         {booksLoading ? (
           <div className="space-y-3">
             {[...Array(4)].map((_, i) => (
@@ -272,7 +315,7 @@ function BooksPanel() {
         ) : topBooks.length === 0 ? (
           <div className="text-center py-8 text-gray-400">
             <BarChart2 size={28} className="text-gray-200 mx-auto mb-2" />
-            <p className="text-sm">لا توجد مبيعات هذا الشهر بعد</p>
+            <p className="text-sm">لا توجد مبيعات لهذا الشهر في الدولة الحالية</p>
           </div>
         ) : (
           <div className="space-y-3">
@@ -280,27 +323,38 @@ function BooksPanel() {
               const pct = Math.round((book.totalSold / (topBooks[0]?.totalSold || 1)) * 100);
               const medals = ['🥇', '🥈', '🥉'];
               const barColors = ['#D4AF37', '#1D4ED8', '#F97316', '#60A5FA', '#a78bfa'];
+
               return (
                 <div key={book.productId} className="flex items-center gap-3">
                   <span className="w-7 text-sm flex-shrink-0 text-center">
                     {i < 3 ? medals[i] : <span className="font-bold text-gray-400 text-xs">{i + 1}</span>}
                   </span>
+
                   {book.cover_url ? (
-                    <img src={book.cover_url} alt={book.title}
-                      className="w-8 h-11 rounded-lg object-cover flex-shrink-0 shadow-sm" />
+                    <img
+                      src={book.cover_url}
+                      alt={book.title}
+                      className="w-8 h-11 rounded-lg object-cover flex-shrink-0 shadow-sm"
+                    />
                   ) : (
                     <div className="w-8 h-11 rounded-lg bg-gray-100 flex items-center justify-center flex-shrink-0">
                       <BookOpen size={12} className="text-gray-300" />
                     </div>
                   )}
+
                   <div className="flex-1 min-w-0">
                     <div className="flex justify-between items-baseline mb-1">
                       <p className="text-sm font-semibold text-gray-800 truncate">{book.title}</p>
-                      <span className="text-xs font-bold text-gray-600 flex-shrink-0 mr-2">{book.totalSold} نسخة</span>
+                      <span className="text-xs font-bold text-gray-600 flex-shrink-0 mr-2">
+                        {book.totalSold} نسخة
+                      </span>
                     </div>
+
                     <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
-                      <div className="h-full rounded-full transition-all"
-                        style={{ width: `${pct}%`, background: barColors[i] }} />
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{ width: `${pct}%`, background: barColors[i] }}
+                      />
                     </div>
                   </div>
                 </div>
@@ -310,18 +364,25 @@ function BooksPanel() {
         )}
       </div>
 
-      {/* Quick actions */}
       <div className="px-5 pb-5 flex gap-2 flex-wrap">
-        <button onClick={() => navigate('/books')}
-          className="flex items-center gap-1.5 text-xs px-3 py-2 bg-blue-50 text-blue-700 rounded-xl hover:bg-blue-100 transition-colors font-semibold">
+        <button
+          onClick={() => navigate('/books')}
+          className="flex items-center gap-1.5 text-xs px-3 py-2 bg-blue-50 text-blue-700 rounded-xl hover:bg-blue-100 transition-colors font-semibold"
+        >
           <Plus size={12} /> إضافة كتاب
         </button>
-        <button onClick={() => navigate('/inventory')}
-          className="flex items-center gap-1.5 text-xs px-3 py-2 bg-amber-50 text-amber-700 rounded-xl hover:bg-amber-100 transition-colors font-semibold">
+
+        <button
+          onClick={() => navigate('/inventory')}
+          className="flex items-center gap-1.5 text-xs px-3 py-2 bg-amber-50 text-amber-700 rounded-xl hover:bg-amber-100 transition-colors font-semibold"
+        >
           <Package size={12} /> إدارة المخزون
         </button>
-        <button onClick={() => navigate('/analytics')}
-          className="flex items-center gap-1.5 text-xs px-3 py-2 bg-green-50 text-green-700 rounded-xl hover:bg-green-100 transition-colors font-semibold">
+
+        <button
+          onClick={() => navigate('/analytics')}
+          className="flex items-center gap-1.5 text-xs px-3 py-2 bg-green-50 text-green-700 rounded-xl hover:bg-green-100 transition-colors font-semibold"
+        >
           <BarChart2 size={12} /> تقارير المبيعات
         </button>
       </div>
@@ -337,7 +398,6 @@ function ActivityPanel() {
 
   return (
     <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-      {/* Header */}
       <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
         <div>
           <h3 className="font-bold text-gray-800 flex items-center gap-2">
@@ -346,9 +406,13 @@ function ActivityPanel() {
           </h3>
           <p className="text-xs text-gray-400 mt-0.5">آخر العمليات المسجّلة في النظام</p>
         </div>
+
         <div className="flex items-center gap-2">
-          <button onClick={() => refetch()} title="تحديث"
-            className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors">
+          <button
+            onClick={() => refetch()}
+            title="تحديث"
+            className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
+          >
             <RefreshCw size={14} />
           </button>
           <button onClick={() => navigate('/activity')} className="btn-primary text-xs flex items-center gap-1.5">
@@ -359,9 +423,11 @@ function ActivityPanel() {
 
       {isLoading && (
         <div className="flex items-center justify-center py-12 gap-2 text-gray-400">
-          <Loader2 size={20} className="animate-spin" /><span className="text-sm">جارٍ التحميل...</span>
+          <Loader2 size={20} className="animate-spin" />
+          <span className="text-sm">جارٍ التحميل...</span>
         </div>
       )}
+
       {isError && (
         <div className="flex items-center justify-center py-12 gap-2 text-amber-500">
           <AlertCircle size={18} />
@@ -379,8 +445,13 @@ function ActivityPanel() {
 
       {!isLoading && !isError && logs.length > 0 && (
         <div className="divide-y divide-gray-50 max-h-[480px] overflow-y-auto">
-          {logs.map(log => {
-            const ac = actionConfig[log.action] ?? { icon: <FileText size={13} />, cls: 'bg-gray-100 text-gray-600' };
+          {logs.map((log) => {
+            const ac =
+              actionConfig[log.action] ?? {
+                icon: <FileText size={13} />,
+                cls: 'bg-gray-100 text-gray-600',
+              };
+
             const tableName = tableArabic[log.table_name ?? ''] ?? log.table_name ?? 'النظام';
             const userName = log.profiles?.full_name ?? 'النظام';
 
@@ -391,11 +462,9 @@ function ActivityPanel() {
                 onClick={() => navigate('/activity')}
                 title="عرض سجل النشاط الكامل"
               >
-                {/* Avatar */}
                 <div className="flex-shrink-0 mt-0.5">
                   {log.profiles?.avatar_url ? (
-                    <img src={log.profiles.avatar_url} alt={userName}
-                      className="w-8 h-8 rounded-full object-cover" />
+                    <img src={log.profiles.avatar_url} alt={userName} className="w-8 h-8 rounded-full object-cover" />
                   ) : (
                     <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center">
                       <span className="text-indigo-700 font-bold text-xs">{userName.charAt(0)}</span>
@@ -403,7 +472,6 @@ function ActivityPanel() {
                   )}
                 </div>
 
-                {/* Content */}
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-semibold text-gray-800">{userName}</span>
@@ -432,22 +500,37 @@ function ActivityPanel() {
 /* ── Main Dashboard ── */
 export default function Index() {
   const qc = useQueryClient();
+  const { selectedCountry, currencySymbol } = useCountry();
 
   const handleRefreshAll = () => {
     qc.invalidateQueries({ queryKey: ['dashboard'] });
+    qc.invalidateQueries({ queryKey: ['analytics'] });
     toast.info('جارٍ تحديث البيانات...');
   };
 
   return (
     <Layout>
       <div className="fade-in">
-
         {/* Page Header */}
         <div className="flex items-start justify-between mb-6">
           <div>
             <h1 className="text-2xl font-black text-gray-800">دار الفتح للنشر والتوزيع</h1>
-            <p className="text-gray-500 text-sm mt-1">لوحة التحكم الرئيسية — نظرة شاملة على أداء المكتبة</p>
+            <p className="text-gray-500 text-sm mt-1">
+              لوحة التحكم الرئيسية — نظرة شاملة على أداء {selectedCountry?.name ?? 'النظام'}
+            </p>
+
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-xl bg-blue-50 text-blue-700">
+                <Globe2 size={12} />
+                {selectedCountry?.name ?? 'كل الدول'}
+              </span>
+
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1 rounded-xl bg-gray-100 text-gray-600">
+                العملة الحالية: {currencySymbol}
+              </span>
+            </div>
           </div>
+
           <button
             onClick={handleRefreshAll}
             className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700 bg-white px-3 py-2 rounded-xl shadow-sm hover:shadow transition-all border border-gray-100"
@@ -456,23 +539,17 @@ export default function Index() {
           </button>
         </div>
 
-        {/* KPI Stats */}
         <KpiCards />
-
-        {/* Charts */}
         <ChartsSection />
 
-        {/* Recent Orders */}
         <div className="mb-6">
           <RecentOrders />
         </div>
 
-        {/* Two Panels: Books + Activity */}
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
           <BooksPanel />
           <ActivityPanel />
         </div>
-
       </div>
     </Layout>
   );
