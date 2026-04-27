@@ -21,7 +21,11 @@ interface VariantForm {
   variant_name: string;
   variant_type: 'مادي' | 'رقمي';
   sku: string;
-  price: string;
+  cost_price: string;
+  base_price: string;
+  sale_price: string;
+  stock: string;
+  min_stock: string;
 }
 
 interface BookForm {
@@ -57,7 +61,11 @@ const emptyVariant = (): VariantForm => ({
   variant_name: 'ورق عادي',
   variant_type: 'مادي',
   sku: '',
-  price: '',
+  cost_price: '',
+  base_price: '',
+  sale_price: '',
+  stock: '0',
+  min_stock: '5',
 });
 
 const VARIANT_NAMES = ['ورق عادي', 'ورق فاخر', 'A4', 'كوشيه', 'إلكتروني'];
@@ -72,6 +80,73 @@ function deriveType(variants: VariantForm[]): Product['type'] {
   const hasD = variants.some((v) => v.variant_type === 'رقمي');
   const hasP = variants.some((v) => v.variant_type === 'مادي');
   return hasD && hasP ? 'ورقي ورقمي' : hasD ? 'رقمي' : 'ورقي';
+}
+
+function toNumber(value: string, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function getVariantSalePrice(v: VariantForm) {
+  const base = toNumber(v.base_price);
+  const sale = toNumber(v.sale_price, base);
+  return sale > 0 ? sale : base;
+}
+
+function getVariantSummary(variants: VariantForm[]) {
+  const valid = variants
+    .map((v) => ({
+      cost: toNumber(v.cost_price),
+      base: toNumber(v.base_price),
+      sale: getVariantSalePrice(v),
+    }))
+    .filter((v) => v.base > 0 && v.sale > 0);
+
+  if (valid.length === 0) {
+    return {
+      minPrice: 0,
+      maxPrice: 0,
+      minCost: 0,
+      minProfit: 0,
+      hasDiscount: false,
+    };
+  }
+
+  const minPrice = Math.min(...valid.map((v) => v.sale));
+  const maxPrice = Math.max(...valid.map((v) => v.sale));
+  const minCost = Math.min(...valid.map((v) => v.cost));
+  const minProfit = Math.min(...valid.map((v) => v.sale - v.cost));
+  const hasDiscount = valid.some((v) => v.sale < v.base);
+
+  return { minPrice, maxPrice, minCost, minProfit, hasDiscount };
+}
+
+function formatPriceRange(min: number, max: number, currencySymbol: string) {
+  if (!min && !max) return '—';
+  if (min === max) return `${min.toLocaleString()} ${currencySymbol}`;
+  return `من ${min.toLocaleString()} إلى ${max.toLocaleString()} ${currencySymbol}`;
+}
+
+function getProductVariantSummary(product: Product) {
+  const variants = product.product_variants ?? [];
+  const prices = variants
+    .map((v) => Number(v.sale_price ?? v.price ?? v.base_price ?? 0))
+    .filter((price) => price > 0);
+
+  if (prices.length === 0) {
+    const fallback = Number(product.sale_price ?? product.base_price ?? 0);
+    return {
+      minPrice: fallback,
+      maxPrice: fallback,
+      count: 0,
+    };
+  }
+
+  return {
+    minPrice: Math.min(...prices),
+    maxPrice: Math.max(...prices),
+    count: variants.length,
+  };
 }
 
 function exportCsv(products: Product[], currencySymbol: string) {
@@ -260,10 +335,7 @@ export default function Books() {
   const coverInputRef = useRef<HTMLInputElement>(null);
   const ebookInputRef = useRef<HTMLInputElement>(null);
 
-  const profit =
-    form.sale_price && form.cost_price
-      ? (parseFloat(form.sale_price) - parseFloat(form.cost_price)).toFixed(2)
-      : null;
+  const variantSummary = getVariantSummary(variants);
 
   const filtered = products
     .filter((p) => {
@@ -316,7 +388,11 @@ export default function Books() {
         variant_name: v.variant_name,
         variant_type: v.variant_type,
         sku: v.sku ?? '',
-        price: String(v.price),
+        cost_price: String(v.cost_price ?? 0),
+        base_price: String(v.base_price ?? v.price ?? 0),
+        sale_price: String(v.sale_price ?? v.price ?? v.base_price ?? 0),
+        stock: String(v.stock ?? 0),
+        min_stock: String(v.min_stock ?? 5),
       }))
     );
     const existingEbook = p.electronic_books?.[0];
@@ -346,6 +422,41 @@ export default function Books() {
     if (!form.title || !form.author) {
       toast.error('العنوان والمؤلف إلزاميان');
       return;
+    }
+
+    if (variants.length === 0) {
+      toast.error('يجب إضافة نسخة واحدة على الأقل للكتاب');
+      setActiveTab('variants');
+      return;
+    }
+
+    for (const variant of variants) {
+      const basePrice = toNumber(variant.base_price);
+      const salePrice = getVariantSalePrice(variant);
+
+      if (!variant.variant_name.trim()) {
+        toast.error('اسم النسخة مطلوب');
+        setActiveTab('variants');
+        return;
+      }
+
+      if (basePrice <= 0 || salePrice <= 0) {
+        toast.error(`أدخل السعر الأساسي وسعر البيع للنسخة: ${variant.variant_name}`);
+        setActiveTab('variants');
+        return;
+      }
+
+      if (salePrice > basePrice) {
+        toast.error(`سعر البيع لا يجب أن يكون أكبر من السعر الأساسي في النسخة: ${variant.variant_name}`);
+        setActiveTab('variants');
+        return;
+      }
+
+      if (variant.variant_type === 'مادي' && toNumber(variant.stock) < 0) {
+        toast.error(`المخزون لا يمكن أن يكون سالبًا للنسخة: ${variant.variant_name}`);
+        setActiveTab('variants');
+        return;
+      }
     }
 
     setUploading(true);
@@ -383,17 +494,28 @@ export default function Books() {
         ? form.keywords.split('،').map((k) => k.trim()).filter(Boolean)
         : [],
       type: deriveType(variants),
-      cost_price: parseFloat(form.cost_price) || 0,
-      base_price: parseFloat(form.base_price) || 0,
-      sale_price: parseFloat(form.sale_price) || undefined,
+      cost_price: variantSummary.minCost,
+      base_price: variantSummary.maxPrice,
+      sale_price: variantSummary.minPrice || undefined,
       is_active: true,
-      variants: variants.map((v) => ({
-        id: v._key,
-        variant_name: v.variant_name,
-        variant_type: v.variant_type,
-        sku: v.sku || undefined,
-        price: parseFloat(v.price) || 0,
-      })),
+      variants: variants.map((v) => {
+        const basePrice = toNumber(v.base_price);
+        const salePrice = getVariantSalePrice(v);
+
+        return {
+          id: v._key,
+          variant_name: v.variant_name,
+          variant_type: v.variant_type,
+          sku: v.sku || undefined,
+          cost_price: toNumber(v.cost_price),
+          base_price: basePrice,
+          sale_price: salePrice,
+          price: salePrice,
+          stock: v.variant_type === 'مادي' ? toNumber(v.stock) : null,
+          reserved_stock: 0,
+          min_stock: v.variant_type === 'مادي' ? toNumber(v.min_stock, 5) : 0,
+        };
+      }),
       ebookFilePath: finalEbookPath || undefined,
       seriesIds: form.seriesIds,
     };
@@ -415,7 +537,18 @@ export default function Books() {
       cost_price: p.cost_price,
       base_price: p.base_price,
       sale_price: p.sale_price,
-      variants: (p.product_variants ?? []).map((v) => ({ ...v, sku: undefined })),
+      variants: (p.product_variants ?? []).map((v) => ({
+        ...v,
+        id: undefined,
+        sku: undefined,
+        cost_price: v.cost_price ?? 0,
+        base_price: v.base_price ?? v.price,
+        sale_price: v.sale_price ?? v.price,
+        price: v.sale_price ?? v.price,
+        stock: v.variant_type === 'مادي' ? v.stock ?? 0 : null,
+        reserved_stock: 0,
+        min_stock: v.variant_type === 'مادي' ? v.min_stock ?? 5 : 0,
+      })),
     });
   };
 
@@ -590,8 +723,12 @@ export default function Books() {
 
                 <tbody>
                   {filtered.map((product) => {
-                    const sp = product.sale_price ?? product.base_price;
-                    const profitVal = sp - product.cost_price;
+                    const summary = getProductVariantSummary(product);
+                    const displayPrice = formatPriceRange(summary.minPrice, summary.maxPrice, currencySymbol);
+                    const variantCount = summary.count;
+                    const variantCosts = (product.product_variants ?? []).map((v) => Number(v.cost_price ?? 0)).filter((v) => v >= 0);
+                    const minCost = variantCosts.length > 0 ? Math.min(...variantCosts) : product.cost_price ?? 0;
+                    const minProfit = summary.minPrice ? summary.minPrice - minCost : 0;
 
                     return (
                       <tr key={product.id} className="table-row">
@@ -630,21 +767,20 @@ export default function Books() {
                         </td>
 
                         <td className="px-4 py-3 text-sm text-gray-600">
-                          {(product.product_variants ?? []).length}
+                          {variantCount}
                         </td>
 
                         <td className="px-4 py-3 text-sm text-gray-600">
-                          {product.cost_price.toLocaleString()} {currencySymbol}
+                          حسب النسخ
                         </td>
 
                         <td className="px-4 py-3 text-sm font-bold text-blue-700">
-                          {sp.toLocaleString()} {currencySymbol}
+                          {displayPrice}
                         </td>
 
                         <td className="px-4 py-3">
-                          <span className={`text-sm font-bold ${profitVal >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-                            {profitVal >= 0 ? '+' : ''}
-                            {profitVal.toLocaleString()} {currencySymbol}
+                          <span className={`text-sm font-bold ${minProfit >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                            {summary.minPrice ? `${minProfit >= 0 ? '+' : ''}${minProfit.toLocaleString()} ${currencySymbol}` : '—'}
                           </span>
                         </td>
 
@@ -870,66 +1006,59 @@ export default function Books() {
                   <div className="bg-blue-50 rounded-2xl p-4">
                     <h4 className="text-sm font-bold text-blue-800 mb-3 flex items-center gap-2">
                       <DollarSign size={15} />
-                      التسعير
+                      ملخص أسعار النسخ
                     </h4>
 
-                    <div className="grid grid-cols-3 gap-3">
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">
-                          سعر التكلفة ({currencySymbol})
-                        </label>
-                        <input
-                          type="number"
-                          value={form.cost_price}
-                          onChange={(e) => setForm((f) => ({ ...f, cost_price: e.target.value }))}
-                          className="input-field"
-                          placeholder="0.00"
-                        />
+                    <p className="text-xs text-blue-700 mb-3 leading-relaxed">
+                      السعر الحقيقي للعميل يتم تحديده من تبويب <b>أنواع النسخ</b>. 
+                      المعلومات الأساسية لا تستخدم كسعر شراء مباشر حتى لا يحدث تكرار أو لخبطة بين النسخة الورقية والرقمية.
+                    </p>
+
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                      <div className="bg-white rounded-xl p-3">
+                        <p className="text-xs text-gray-500 mb-1">عدد النسخ</p>
+                        <p className="text-lg font-bold text-gray-800">{variants.length}</p>
                       </div>
 
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">
-                          سعر الأساس ({currencySymbol})
-                        </label>
-                        <input
-                          type="number"
-                          value={form.base_price}
-                          onChange={(e) => setForm((f) => ({ ...f, base_price: e.target.value }))}
-                          className="input-field"
-                          placeholder="0.00"
-                        />
+                      <div className="bg-white rounded-xl p-3">
+                        <p className="text-xs text-gray-500 mb-1">أقل سعر</p>
+                        <p className="text-lg font-bold text-blue-700">
+                          {variantSummary.minPrice ? `${variantSummary.minPrice.toLocaleString()} ${currencySymbol}` : '—'}
+                        </p>
                       </div>
 
-                      <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-1">
-                          سعر البيع ({currencySymbol})
-                        </label>
-                        <input
-                          type="number"
-                          value={form.sale_price}
-                          onChange={(e) => setForm((f) => ({ ...f, sale_price: e.target.value }))}
-                          className="input-field"
-                          placeholder="0.00"
-                        />
+                      <div className="bg-white rounded-xl p-3">
+                        <p className="text-xs text-gray-500 mb-1">أعلى سعر</p>
+                        <p className="text-lg font-bold text-blue-700">
+                          {variantSummary.maxPrice ? `${variantSummary.maxPrice.toLocaleString()} ${currencySymbol}` : '—'}
+                        </p>
+                      </div>
+
+                      <div className="bg-white rounded-xl p-3">
+                        <p className="text-xs text-gray-500 mb-1">أقل ربح</p>
+                        <p className={`text-lg font-bold ${variantSummary.minProfit >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                          {variantSummary.minPrice ? `${variantSummary.minProfit.toLocaleString()} ${currencySymbol}` : '—'}
+                        </p>
                       </div>
                     </div>
 
-                    <div className="mt-3 bg-white rounded-xl p-3 flex items-center justify-between">
-                      <span className="text-sm text-gray-600">الربح المحسوب تلقائياً:</span>
-                      <span className={`text-base font-bold ${profit && parseFloat(profit) >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-                        {profit !== null ? `${profit} ${currencySymbol}` : '—'}
-                      </span>
-                    </div>
+                    {variants.length === 0 && (
+                      <div className="mt-3 bg-red-50 border border-red-100 rounded-xl p-3 text-xs text-red-600 font-semibold">
+                        يجب إضافة نسخة واحدة على الأقل من تبويب أنواع النسخ قبل حفظ الكتاب.
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
 
               {activeTab === 'variants' && (
                 <div className="space-y-4">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-3">
                     <div>
-                      <p className="text-sm font-bold text-gray-700">نسخ الكتاب</p>
-                      <p className="text-xs text-gray-400">أضف أكثر من نسخة لنفس الكتاب</p>
+                      <p className="text-sm font-bold text-gray-700">نسخ الكتاب <span className="text-red-500">*</span></p>
+                      <p className="text-xs text-gray-400">
+                        كل نسخة لها سعرها وخصمها ومخزونها. لا يمكن حفظ كتاب بدون نسخة واحدة على الأقل.
+                      </p>
                     </div>
                     <button
                       onClick={() => setVariants((v) => [...v, emptyVariant()])}
@@ -941,120 +1070,245 @@ export default function Books() {
                   </div>
 
                   {variants.length === 0 ? (
-                    <div className="text-center py-10 bg-gray-50 rounded-2xl">
-                      <Package size={32} className="text-gray-300 mx-auto mb-2" />
-                      <p className="text-sm text-gray-500">لا توجد نسخ بعد</p>
+                    <div className="text-center py-10 bg-red-50 border border-red-100 rounded-2xl">
+                      <Package size={32} className="text-red-300 mx-auto mb-2" />
+                      <p className="text-sm text-red-600 font-semibold">يجب إضافة نسخة واحدة على الأقل</p>
+                      <p className="text-xs text-red-400 mt-1">
+                        مثال: إلكتروني / رقمي أو ورق عادي / مادي
+                      </p>
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      {variants.map((v, idx) => (
-                        <div key={v._key} className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
-                          <div className="flex items-center justify-between mb-3">
-                            <div className="flex gap-2">
-                              <select
-                                value={v.variant_name}
-                                onChange={(e) =>
-                                  setVariants((prev) =>
-                                    prev.map((x, i) => (i === idx ? { ...x, variant_name: e.target.value } : x))
-                                  )
-                                }
-                                className="input-field text-sm py-1.5 h-auto w-36"
-                              >
-                                {VARIANT_NAMES.map((t) => (
-                                  <option key={t}>{t}</option>
-                                ))}
-                              </select>
+                      {variants.map((v, idx) => {
+                        const basePrice = toNumber(v.base_price);
+                        const salePrice = getVariantSalePrice(v);
+                        const costPrice = toNumber(v.cost_price);
+                        const discountPercent =
+                          basePrice > 0 && salePrice > 0 && salePrice < basePrice
+                            ? Math.round(((basePrice - salePrice) / basePrice) * 100)
+                            : 0;
+                        const variantProfit = salePrice - costPrice;
 
-                              <select
-                                value={v.variant_type}
-                                onChange={(e) =>
-                                  setVariants((prev) =>
-                                    prev.map((x, i) =>
-                                      i === idx
-                                        ? { ...x, variant_type: e.target.value as 'مادي' | 'رقمي' }
-                                        : x
+                        return (
+                          <div key={v._key} className="bg-gray-50 rounded-2xl p-4 border border-gray-100">
+                            <div className="flex items-center justify-between mb-3">
+                              <div className="flex gap-2 flex-wrap">
+                                <select
+                                  value={v.variant_name}
+                                  onChange={(e) =>
+                                    setVariants((prev) =>
+                                      prev.map((x, i) => (i === idx ? { ...x, variant_name: e.target.value } : x))
                                     )
-                                  )
-                                }
-                                className="input-field text-sm py-1.5 h-auto w-28"
-                              >
-                                <option value="مادي">مادي</option>
-                                <option value="رقمي">رقمي</option>
-                              </select>
-                            </div>
-
-                            <button
-                              onClick={() => setVariants((prev) => prev.filter((_, i) => i !== idx))}
-                              className="p-1.5 rounded-lg hover:bg-red-100 text-red-500"
-                            >
-                              <X size={14} />
-                            </button>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-3">
-                            <div>
-                              <label className="text-xs text-gray-500 block mb-1">
-                                السعر ({currencySymbol})
-                              </label>
-                              <input
-                                type="number"
-                                value={v.price}
-                                onChange={(e) =>
-                                  setVariants((prev) =>
-                                    prev.map((x, i) => (i === idx ? { ...x, price: e.target.value } : x))
-                                  )
-                                }
-                                className="input-field text-sm py-1.5 h-auto"
-                              />
-                            </div>
-
-                            <div>
-                              <label className="text-xs text-gray-500 block mb-1">SKU</label>
-                              <input
-                                value={v.sku}
-                                onChange={(e) =>
-                                  setVariants((prev) =>
-                                    prev.map((x, i) => (i === idx ? { ...x, sku: e.target.value } : x))
-                                  )
-                                }
-                                className="input-field text-sm py-1.5 h-auto"
-                                placeholder="BOOK-001-A"
-                              />
-                            </div>
-                          </div>
-
-                          {v.variant_type === 'رقمي' && (
-                            <div className="mt-3 p-3 bg-purple-50 rounded-xl border border-purple-100">
-                              <p className="text-xs font-semibold text-purple-700 mb-2 flex items-center gap-1.5">
-                                <FileText size={13} />
-                                ملف الكتاب الرقمي (PDF / EPUB)
-                              </p>
-                              <div className="flex items-center gap-3 flex-wrap">
-                                <button
-                                  type="button"
-                                  onClick={() => ebookInputRef.current?.click()}
-                                  className="flex items-center gap-2 px-4 py-2 bg-white border border-purple-200 rounded-xl text-sm text-purple-700 hover:bg-purple-50 transition-colors"
+                                  }
+                                  className="input-field text-sm py-1.5 h-auto w-36"
                                 >
-                                  <Upload size={14} />
-                                  {ebookFile ? ebookFile.name : 'رفع ملف'}
-                                </button>
+                                  {VARIANT_NAMES.map((t) => (
+                                    <option key={t}>{t}</option>
+                                  ))}
+                                </select>
 
-                                {(ebookFile || ebookPath) && (
-                                  <span className="text-xs text-purple-600 font-mono">
-                                    {ebookFile ? '✓ ملف جديد' : '✓ ملف مرفوع'}
-                                  </span>
-                                )}
+                                <select
+                                  value={v.variant_type}
+                                  onChange={(e) =>
+                                    setVariants((prev) =>
+                                      prev.map((x, i) =>
+                                        i === idx
+                                          ? { ...x, variant_type: e.target.value as 'مادي' | 'رقمي' }
+                                          : x
+                                      )
+                                    )
+                                  }
+                                  className="input-field text-sm py-1.5 h-auto w-28"
+                                >
+                                  <option value="مادي">مادي</option>
+                                  <option value="رقمي">رقمي</option>
+                                </select>
+
+                                <span className={`text-xs px-2.5 py-1 rounded-full font-semibold ${
+                                  v.variant_type === 'رقمي'
+                                    ? 'bg-purple-100 text-purple-700'
+                                    : 'bg-blue-100 text-blue-700'
+                                }`}>
+                                  {v.variant_type === 'رقمي' ? 'غير محدود المخزون' : 'له مخزون منفصل'}
+                                </span>
                               </div>
 
-                              <div className="flex gap-3 text-xs text-purple-600 mt-2 flex-wrap">
-                                <span>✓ يباع مرة واحدة لكل عميل</span>
-                                <span>✓ رابط تحميل مؤقت (24 ساعة)</span>
-                                <span>✓ حماية بعلامة مائية</span>
+                              <button
+                                onClick={() => setVariants((prev) => prev.filter((_, i) => i !== idx))}
+                                className="p-1.5 rounded-lg hover:bg-red-100 text-red-500"
+                                title="حذف النسخة"
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                              <div>
+                                <label className="text-xs text-gray-500 block mb-1">
+                                  سعر التكلفة ({currencySymbol})
+                                </label>
+                                <input
+                                  type="number"
+                                  value={v.cost_price}
+                                  onChange={(e) =>
+                                    setVariants((prev) =>
+                                      prev.map((x, i) => (i === idx ? { ...x, cost_price: e.target.value } : x))
+                                    )
+                                  }
+                                  className="input-field text-sm py-1.5 h-auto"
+                                  placeholder="0.00"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="text-xs text-gray-500 block mb-1">
+                                  السعر الأساسي قبل الخصم ({currencySymbol})
+                                </label>
+                                <input
+                                  type="number"
+                                  value={v.base_price}
+                                  onChange={(e) =>
+                                    setVariants((prev) =>
+                                      prev.map((x, i) => {
+                                        if (i !== idx) return x;
+                                        const nextBase = e.target.value;
+                                        return {
+                                          ...x,
+                                          base_price: nextBase,
+                                          sale_price: x.sale_price || nextBase,
+                                        };
+                                      })
+                                    )
+                                  }
+                                  className="input-field text-sm py-1.5 h-auto"
+                                  placeholder="0.00"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="text-xs text-gray-500 block mb-1">
+                                  سعر البيع بعد الخصم ({currencySymbol})
+                                </label>
+                                <input
+                                  type="number"
+                                  value={v.sale_price}
+                                  onChange={(e) =>
+                                    setVariants((prev) =>
+                                      prev.map((x, i) => (i === idx ? { ...x, sale_price: e.target.value } : x))
+                                    )
+                                  }
+                                  className="input-field text-sm py-1.5 h-auto"
+                                  placeholder="0.00"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="text-xs text-gray-500 block mb-1">SKU</label>
+                                <input
+                                  value={v.sku}
+                                  onChange={(e) =>
+                                    setVariants((prev) =>
+                                      prev.map((x, i) => (i === idx ? { ...x, sku: e.target.value } : x))
+                                    )
+                                  }
+                                  className="input-field text-sm py-1.5 h-auto"
+                                  placeholder="BOOK-001-A"
+                                />
                               </div>
                             </div>
-                          )}
-                        </div>
-                      ))}
+
+                            <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+                              <div className="bg-white rounded-xl p-3">
+                                <p className="text-xs text-gray-500 mb-1">خصم النسخة</p>
+                                <p className="text-sm font-bold text-amber-600">
+                                  {discountPercent > 0 ? `${discountPercent}%` : 'لا يوجد خصم'}
+                                </p>
+                              </div>
+
+                              <div className="bg-white rounded-xl p-3">
+                                <p className="text-xs text-gray-500 mb-1">ربح النسخة</p>
+                                <p className={`text-sm font-bold ${variantProfit >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                                  {salePrice > 0 ? `${variantProfit.toLocaleString()} ${currencySymbol}` : '—'}
+                                </p>
+                              </div>
+
+                              {v.variant_type === 'مادي' ? (
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div className="bg-white rounded-xl p-3">
+                                    <label className="text-xs text-gray-500 block mb-1">المخزون</label>
+                                    <input
+                                      type="number"
+                                      value={v.stock}
+                                      onChange={(e) =>
+                                        setVariants((prev) =>
+                                          prev.map((x, i) => (i === idx ? { ...x, stock: e.target.value } : x))
+                                        )
+                                      }
+                                      className="input-field text-sm py-1.5 h-auto"
+                                      placeholder="0"
+                                    />
+                                  </div>
+
+                                  <div className="bg-white rounded-xl p-3">
+                                    <label className="text-xs text-gray-500 block mb-1">حد التنبيه</label>
+                                    <input
+                                      type="number"
+                                      value={v.min_stock}
+                                      onChange={(e) =>
+                                        setVariants((prev) =>
+                                          prev.map((x, i) => (i === idx ? { ...x, min_stock: e.target.value } : x))
+                                        )
+                                      }
+                                      className="input-field text-sm py-1.5 h-auto"
+                                      placeholder="5"
+                                    />
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="bg-purple-50 rounded-xl p-3 border border-purple-100">
+                                  <p className="text-xs font-semibold text-purple-700">
+                                    نسخة رقمية — تظهر في المخزون كـ غير محدود
+                                  </p>
+                                  <p className="text-xs text-purple-500 mt-1">
+                                    لا يتم خصم كمية فعلية منها.
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+
+                            {v.variant_type === 'رقمي' && (
+                              <div className="mt-3 p-3 bg-purple-50 rounded-xl border border-purple-100">
+                                <p className="text-xs font-semibold text-purple-700 mb-2 flex items-center gap-1.5">
+                                  <FileText size={13} />
+                                  ملف الكتاب الرقمي (PDF / EPUB)
+                                </p>
+                                <div className="flex items-center gap-3 flex-wrap">
+                                  <button
+                                    type="button"
+                                    onClick={() => ebookInputRef.current?.click()}
+                                    className="flex items-center gap-2 px-4 py-2 bg-white border border-purple-200 rounded-xl text-sm text-purple-700 hover:bg-purple-50 transition-colors"
+                                  >
+                                    <Upload size={14} />
+                                    {ebookFile ? ebookFile.name : 'رفع ملف'}
+                                  </button>
+
+                                  {(ebookFile || ebookPath) && (
+                                    <span className="text-xs text-purple-600 font-mono">
+                                      {ebookFile ? '✓ ملف جديد' : '✓ ملف مرفوع'}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex gap-3 text-xs text-purple-600 mt-2 flex-wrap">
+                                  <span>✓ يباع مرة واحدة لكل عميل</span>
+                                  <span>✓ رابط تحميل مؤقت (24 ساعة)</span>
+                                  <span>✓ حماية بعلامة مائية</span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>

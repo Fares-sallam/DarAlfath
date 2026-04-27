@@ -20,8 +20,16 @@ export interface ProductVariant {
   product_id: string;
   variant_name: string;
   variant_type: 'مادي' | 'رقمي';
-  sku?: string;
+  sku?: string | null;
+  /** Final/current selling price. Kept for compatibility with old code. */
   price: number;
+  cost_price?: number;
+  base_price?: number;
+  sale_price?: number | null;
+  stock?: number | null;
+  reserved_stock?: number | null;
+  min_stock?: number | null;
+  country_id?: string | null;
 }
 
 export interface ProductImage {
@@ -69,6 +77,20 @@ export interface Product {
   product_images?: ProductImage[];
 }
 
+export interface ProductVariantInput {
+  id?: string;
+  variant_name: string;
+  variant_type: 'مادي' | 'رقمي';
+  sku?: string | null;
+  price?: number;
+  cost_price?: number;
+  base_price?: number;
+  sale_price?: number | null;
+  stock?: number | null;
+  reserved_stock?: number | null;
+  min_stock?: number | null;
+}
+
 export interface UpsertProductInput {
   id?: string;
   title: string;
@@ -79,11 +101,12 @@ export interface UpsertProductInput {
   isbn?: string;
   keywords?: string[];
   type: 'ورقي' | 'رقمي' | 'ورقي ورقمي';
+  /** These are now summary/fallback values. Real prices come from variants. */
   cost_price: number;
   base_price: number;
   sale_price?: number;
   is_active?: boolean;
-  variants: Omit<ProductVariant, 'product_id'>[];
+  variants: ProductVariantInput[];
   ebookFilePath?: string;
   seriesIds?: string[];
   additionalImages?: { url: string; alt_text?: string; is_primary?: boolean }[];
@@ -101,30 +124,90 @@ type VariantCountryPriceRow = {
   variant_id: string;
   country_id: string;
   price: number;
+  cost_price?: number | null;
+  base_price?: number | null;
+  sale_price?: number | null;
 };
 
-async function fetchScopedProductIds(selectedCountryId?: string | null): Promise<string[] | null> {
-  if (!selectedCountryId) return null;
+type VariantInventoryRow = {
+  id: string;
+  product_id: string;
+  variant_id: string | null;
+  country_id: string;
+  stock: number;
+  reserved_stock: number;
+  min_stock: number;
+};
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isUuid(value?: string | null) {
+  return !!value && UUID_RE.test(value);
+}
+
+function num(value: unknown, fallback = 0): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function normalizeSale(basePrice: number, salePrice?: number | null) {
+  const sale = num(salePrice, basePrice);
+  return sale > 0 ? sale : basePrice;
+}
+
+function normalizeVariant(v: ProductVariantInput): ProductVariantInput & { price: number; cost_price: number; base_price: number; sale_price: number; min_stock: number; stock: number; reserved_stock: number } {
+  const base_price = Math.max(0, num(v.base_price ?? v.price, 0));
+  const sale_price = normalizeSale(base_price, v.sale_price ?? v.price ?? base_price);
+  const cost_price = Math.max(0, num(v.cost_price, 0));
+  const stock = Math.max(0, Math.trunc(num(v.stock, 0)));
+  const reserved_stock = Math.max(0, Math.trunc(num(v.reserved_stock, 0)));
+  const min_stock = Math.max(0, Math.trunc(num(v.min_stock, 5)));
+
+  return {
+    ...v,
+    variant_name: v.variant_name?.trim() || 'نسخة',
+    sku: v.sku?.trim() || null,
+    cost_price,
+    base_price,
+    sale_price,
+    price: sale_price,
+    stock,
+    reserved_stock,
+    min_stock,
+  };
+}
+
+function summarizeVariants(variants: ReturnType<typeof normalizeVariant>[]) {
+  const salePrices = variants.map((v) => v.sale_price).filter((p) => p > 0);
+  const basePrices = variants.map((v) => v.base_price).filter((p) => p > 0);
+  const costPrices = variants.map((v) => v.cost_price).filter((p) => p >= 0);
+
+  const minSale = salePrices.length ? Math.min(...salePrices) : 0;
+  const minBase = basePrices.length ? Math.min(...basePrices) : minSale;
+  const minCost = costPrices.length ? Math.min(...costPrices) : 0;
+
+  return {
+    cost_price: minCost,
+    base_price: minBase,
+    sale_price: minSale || undefined,
+  };
+}
+
+async function resolveCountryId(selectedCountryId?: string | null): Promise<string | null> {
+  if (selectedCountryId) return selectedCountryId;
 
   const { data, error } = await supabase
-    .from('product_inventory')
-    .select('product_id, country_id')
-    .eq('country_id', selectedCountryId);
+    .from('countries')
+    .select('id')
+    .eq('code', 'EG')
+    .maybeSingle();
 
   if (error) {
-    console.warn('[useBooks] product_inventory country scope fallback:', error.message);
+    console.warn('[useBooks] failed to resolve EG country:', error.message);
     return null;
   }
 
-  const ids = Array.from(
-    new Set(
-      ((data ?? []) as { product_id: string }[])
-        .map((row) => row.product_id)
-        .filter(Boolean)
-    )
-  );
-
-  return ids;
+  return data?.id ?? null;
 }
 
 async function fetchCountryPriceMap(
@@ -159,7 +242,7 @@ async function fetchVariantCountryPriceMap(
 
   const { data, error } = await supabase
     .from('product_variant_country_prices')
-    .select('variant_id, country_id, price')
+    .select('variant_id, country_id, price, cost_price, base_price, sale_price')
     .eq('country_id', selectedCountryId)
     .in('variant_id', variantIds);
 
@@ -175,7 +258,31 @@ async function fetchVariantCountryPriceMap(
   return map;
 }
 
-/* ── Fetch all products (country-aware) ── */
+async function fetchVariantInventoryMap(
+  variantIds: string[],
+  selectedCountryId?: string | null
+): Promise<Record<string, VariantInventoryRow>> {
+  if (!selectedCountryId || variantIds.length === 0) return {};
+
+  const { data, error } = await supabase
+    .from('product_inventory')
+    .select('id, product_id, variant_id, country_id, stock, reserved_stock, min_stock')
+    .eq('country_id', selectedCountryId)
+    .in('variant_id', variantIds);
+
+  if (error) {
+    console.warn('[useBooks] product_inventory variant map fallback:', error.message);
+    return {};
+  }
+
+  const map: Record<string, VariantInventoryRow> = {};
+  for (const row of (data ?? []) as VariantInventoryRow[]) {
+    if (row.variant_id) map[row.variant_id] = row;
+  }
+  return map;
+}
+
+/* ── Fetch all products (country-aware prices and variant stock) ── */
 export function useProducts() {
   const { selectedCountry } = useCountry();
 
@@ -183,59 +290,46 @@ export function useProducts() {
     queryKey: ['products', selectedCountry?.id ?? 'all'],
     staleTime: 60_000,
     queryFn: async (): Promise<Product[]> => {
-      const scopedIds = await fetchScopedProductIds(selectedCountry?.id);
-
-      if (Array.isArray(scopedIds) && scopedIds.length === 0) {
-        return [];
-      }
-
-      let query = supabase
+      const { data, error } = await supabase
         .from('products')
         .select(`
           id, title, author, description, cover_url, category_id, isbn, keywords,
           type, cost_price, base_price, sale_price, profit, is_active, created_at, updated_at,
           categories(id, name, slug),
-          product_variants(id, product_id, variant_name, variant_type, sku, price),
+          product_variants(id, product_id, variant_name, variant_type, sku, price, cost_price, base_price, sale_price),
           electronic_books(id, product_id, file_path, file_format, is_sold_once, file_size_mb, protected, watermark),
           product_series(series_id, book_series(id, name, author))
         `)
         .order('created_at', { ascending: false })
         .limit(300);
 
-      if (Array.isArray(scopedIds) && scopedIds.length > 0) {
-        query = query.in('id', scopedIds);
-      }
-
-      const { data, error } = await query;
       if (error) throw error;
 
       const products = (data ?? []) as Product[];
-
       if (products.length === 0) return [];
 
       const productIds = products.map((p) => p.id);
+      const allVariantIds = products.flatMap((p) => (p.product_variants ?? []).map((v) => v.id));
 
-      const [{ data: imagesData }, countryPriceMap] = await Promise.all([
+      const [imagesResult, countryPriceMap, variantPriceMap, variantInventoryMap] = await Promise.all([
         supabase
           .from('product_images')
           .select('id, product_id, url, alt_text, sort_order, is_primary, created_at')
           .in('product_id', productIds)
           .order('sort_order'),
         fetchCountryPriceMap(productIds, selectedCountry?.id),
+        fetchVariantCountryPriceMap(allVariantIds, selectedCountry?.id),
+        fetchVariantInventoryMap(allVariantIds, selectedCountry?.id),
       ]);
 
-      const allVariantIds = products.flatMap((p) => (p.product_variants ?? []).map((v) => v.id));
-      const variantPriceMap = await fetchVariantCountryPriceMap(allVariantIds, selectedCountry?.id);
-
       const imagesByProduct: Record<string, ProductImage[]> = {};
-      for (const img of (imagesData ?? []) as (ProductImage & { product_id: string })[]) {
+      for (const img of (imagesResult.data ?? []) as (ProductImage & { product_id: string })[]) {
         if (!imagesByProduct[img.product_id]) imagesByProduct[img.product_id] = [];
         imagesByProduct[img.product_id].push(img);
       }
 
       return products.map((p) => {
         const priceOverride = countryPriceMap[p.id];
-
         const finalCost = priceOverride?.cost_price ?? p.cost_price;
         const finalBase = priceOverride?.base_price ?? p.base_price;
         const finalSale = priceOverride?.sale_price ?? p.sale_price ?? undefined;
@@ -243,9 +337,21 @@ export function useProducts() {
 
         const scopedVariants = (p.product_variants ?? []).map((v) => {
           const override = variantPriceMap[v.id];
+          const inv = variantInventoryMap[v.id];
+          const cost = override?.cost_price ?? v.cost_price ?? 0;
+          const base = override?.base_price ?? v.base_price ?? v.price ?? 0;
+          const sale = override?.sale_price ?? v.sale_price ?? override?.price ?? v.price ?? base;
+
           return {
             ...v,
-            price: override?.price ?? v.price,
+            cost_price: cost,
+            base_price: base,
+            sale_price: sale,
+            price: sale,
+            stock: inv?.stock ?? null,
+            reserved_stock: inv?.reserved_stock ?? null,
+            min_stock: inv?.min_stock ?? null,
+            country_id: inv?.country_id ?? selectedCountry?.id ?? null,
           };
         });
 
@@ -295,15 +401,32 @@ export function useBookSeries() {
   });
 }
 
-/* ── Upsert (add/edit) product (country-aware pricing) ── */
+/* ── Upsert (add/edit) product with variants as the source of truth ── */
 export function useUpsertProduct() {
   const qc = useQueryClient();
   const { selectedCountry } = useCountry();
 
   return useMutation({
     mutationFn: async (input: UpsertProductInput) => {
+      if (!input.variants || input.variants.length === 0) {
+        throw new Error('يجب إضافة نسخة واحدة على الأقل للكتاب');
+      }
+
+      const normalizedVariants = input.variants.map(normalizeVariant);
+
+      for (const variant of normalizedVariants) {
+        if (!variant.variant_name) throw new Error('اسم النسخة مطلوب');
+        if (variant.base_price <= 0) throw new Error(`السعر الأساسي مطلوب للنسخة: ${variant.variant_name}`);
+        if (variant.sale_price <= 0) throw new Error(`سعر البيع مطلوب للنسخة: ${variant.variant_name}`);
+        if (variant.sale_price > variant.base_price) {
+          throw new Error(`سعر البيع لا يجب أن يكون أكبر من السعر الأساسي في النسخة: ${variant.variant_name}`);
+        }
+      }
+
       const isEdit = !!input.id;
       let productId = input.id ?? '';
+      const countryId = await resolveCountryId(selectedCountry?.id);
+      const summary = summarizeVariants(normalizedVariants);
 
       if (isEdit) {
         const { data: updated, error: updateErr } = await supabase
@@ -317,6 +440,9 @@ export function useUpsertProduct() {
             isbn: input.isbn || null,
             keywords: input.keywords,
             type: input.type,
+            cost_price: summary.cost_price,
+            base_price: summary.base_price,
+            sale_price: summary.sale_price ?? null,
             is_active: input.is_active ?? true,
           })
           .eq('id', input.id!)
@@ -325,48 +451,6 @@ export function useUpsertProduct() {
 
         if (updateErr) throw updateErr;
         productId = updated.id;
-
-        // لو لا توجد دولة مختارة، أو لا يوجد جدول أسعار حسب الدولة، يحدث السعر العام
-        if (!selectedCountry?.id) {
-          const { error: priceErr } = await supabase
-            .from('products')
-            .update({
-              cost_price: input.cost_price,
-              base_price: input.base_price,
-              sale_price: input.sale_price || null,
-            })
-            .eq('id', productId);
-
-          if (priceErr) throw priceErr;
-        } else {
-          const { error: scopedPriceErr } = await supabase
-            .from('product_country_prices')
-            .upsert(
-              {
-                product_id: productId,
-                country_id: selectedCountry.id,
-                cost_price: input.cost_price,
-                base_price: input.base_price,
-                sale_price: input.sale_price || null,
-              },
-              { onConflict: 'product_id,country_id' }
-            );
-
-          if (scopedPriceErr) {
-            console.warn('[useBooks] product_country_prices fallback to global:', scopedPriceErr.message);
-
-            const { error: fallbackPriceErr } = await supabase
-              .from('products')
-              .update({
-                cost_price: input.cost_price,
-                base_price: input.base_price,
-                sale_price: input.sale_price || null,
-              })
-              .eq('id', productId);
-
-            if (fallbackPriceErr) throw fallbackPriceErr;
-          }
-        }
       } else {
         const { data: created, error: createErr } = await supabase
           .from('products')
@@ -379,9 +463,9 @@ export function useUpsertProduct() {
             isbn: input.isbn || null,
             keywords: input.keywords,
             type: input.type,
-            cost_price: input.cost_price,
-            base_price: input.base_price,
-            sale_price: input.sale_price || null,
+            cost_price: summary.cost_price,
+            base_price: summary.base_price,
+            sale_price: summary.sale_price ?? null,
             is_active: input.is_active ?? true,
           })
           .select()
@@ -389,99 +473,137 @@ export function useUpsertProduct() {
 
         if (createErr) throw createErr;
         productId = created.id;
+      }
 
-        if (selectedCountry?.id) {
-          const { error: scopedCreatePriceErr } = await supabase
-            .from('product_country_prices')
+      if (countryId) {
+        await supabase
+          .from('product_country_prices')
+          .upsert(
+            {
+              product_id: productId,
+              country_id: countryId,
+              cost_price: summary.cost_price,
+              base_price: summary.base_price,
+              sale_price: summary.sale_price ?? null,
+            },
+            { onConflict: 'product_id,country_id' }
+          )
+          .then(({ error }) => {
+            if (error) console.warn('[useBooks] product_country_prices summary fallback:', error.message);
+          });
+      }
+
+      const { data: oldVariantsData } = await supabase
+        .from('product_variants')
+        .select('id')
+        .eq('product_id', productId);
+
+      const oldVariantIds = ((oldVariantsData ?? []) as { id: string }[]).map((v) => v.id);
+      const keptVariantIds: string[] = [];
+
+      for (const variant of normalizedVariants) {
+        const payload = {
+          product_id: productId,
+          variant_name: variant.variant_name,
+          variant_type: variant.variant_type,
+          sku: variant.sku || null,
+          cost_price: variant.cost_price,
+          base_price: variant.base_price,
+          sale_price: variant.sale_price,
+          price: variant.sale_price,
+        };
+
+        let savedVariant: ProductVariant;
+        if (isUuid(variant.id)) {
+          const { data: updatedVariant, error: updateVariantErr } = await supabase
+            .from('product_variants')
+            .update(payload)
+            .eq('id', variant.id!)
+            .select()
+            .single();
+
+          if (updateVariantErr) throw updateVariantErr;
+          savedVariant = updatedVariant as ProductVariant;
+        } else {
+          const { data: insertedVariant, error: insertVariantErr } = await supabase
+            .from('product_variants')
+            .insert(payload)
+            .select()
+            .single();
+
+          if (insertVariantErr) throw insertVariantErr;
+          savedVariant = insertedVariant as ProductVariant;
+        }
+
+        keptVariantIds.push(savedVariant.id);
+
+        if (countryId) {
+          await supabase
+            .from('product_variant_country_prices')
+            .upsert(
+              {
+                variant_id: savedVariant.id,
+                country_id: countryId,
+                cost_price: variant.cost_price,
+                base_price: variant.base_price,
+                sale_price: variant.sale_price,
+                price: variant.sale_price,
+              },
+              { onConflict: 'variant_id,country_id' }
+            )
+            .then(({ error }) => {
+              if (error) console.warn('[useBooks] product_variant_country_prices fallback:', error.message);
+            });
+        }
+
+        if (variant.variant_type === 'مادي') {
+          if (!countryId) throw new Error('يجب اختيار دولة قبل حفظ مخزون النسخة المادية');
+
+          const { error: invErr } = await supabase
+            .from('product_inventory')
             .upsert(
               {
                 product_id: productId,
-                country_id: selectedCountry.id,
-                cost_price: input.cost_price,
-                base_price: input.base_price,
-                sale_price: input.sale_price || null,
+                variant_id: savedVariant.id,
+                country_id: countryId,
+                stock: variant.stock,
+                reserved_stock: variant.reserved_stock,
+                min_stock: variant.min_stock,
               },
-              { onConflict: 'product_id,country_id' }
+              { onConflict: 'product_id,country_id,variant_id' }
             );
 
-          if (scopedCreatePriceErr) {
-            console.warn('[useBooks] product_country_prices create fallback:', scopedCreatePriceErr.message);
-          }
+          if (invErr) throw invErr;
+        } else if (countryId) {
+          // Digital variants are shown in inventory as unlimited virtual rows, not stored as physical stock.
+          await supabase
+            .from('product_inventory')
+            .delete()
+            .eq('variant_id', savedVariant.id)
+            .eq('country_id', countryId)
+            .then(() => {})
+            .catch(() => {});
         }
       }
 
-      // احتفظ بنسخ الأسعار العامة قبل حذف النسخ القديمة إن لزم
-      let existingVariantGlobals: Record<string, number> = {};
-      if (isEdit && selectedCountry?.id) {
-        const { data: oldVariants } = await supabase
-          .from('product_variants')
-          .select('variant_name, variant_type, price')
-          .eq('product_id', productId);
-
-        for (const row of (oldVariants ?? []) as { variant_name: string; variant_type: string; price: number }[]) {
-          existingVariantGlobals[`${row.variant_name}__${row.variant_type}`] = row.price;
-        }
+      const removedVariantIds = oldVariantIds.filter((id) => !keptVariantIds.includes(id));
+      if (removedVariantIds.length > 0) {
+        await supabase.from('product_inventory').delete().in('variant_id', removedVariantIds).then(() => {}).catch(() => {});
+        await supabase.from('product_variant_country_prices').delete().in('variant_id', removedVariantIds).then(() => {}).catch(() => {});
+        await supabase.from('product_variants').delete().in('id', removedVariantIds);
       }
 
-      // Sync variants
-      if (isEdit) {
-        await supabase.from('product_variants').delete().eq('product_id', productId);
-      }
-
-      let insertedVariants: ProductVariant[] = [];
-      if (input.variants.length > 0) {
-        const varData = input.variants.map((v) => {
-          const key = `${v.variant_name}__${v.variant_type}`;
-          const globalPrice =
-            selectedCountry?.id && isEdit
-              ? existingVariantGlobals[key] ?? v.price
-              : v.price;
-
-          return {
-            product_id: productId,
-            variant_name: v.variant_name,
-            variant_type: v.variant_type,
-            sku: v.sku || null,
-            price: globalPrice,
-          };
-        });
-
-        const { data: inserted, error: vErr } = await supabase
-          .from('product_variants')
-          .insert(varData)
-          .select();
-
-        if (vErr) throw vErr;
-        insertedVariants = (inserted ?? []) as ProductVariant[];
-
-        // حفظ أسعار النسخ حسب الدولة
-        if (selectedCountry?.id && insertedVariants.length > 0) {
-          const rows = insertedVariants.map((insertedVariant) => {
-            const inputMatch = input.variants.find(
-              (v) =>
-                v.variant_name === insertedVariant.variant_name &&
-                v.variant_type === insertedVariant.variant_type
-            );
-
-            return {
-              variant_id: insertedVariant.id,
-              country_id: selectedCountry.id,
-              price: inputMatch?.price ?? insertedVariant.price,
-            };
-          });
-
-          const { error: vpErr } = await supabase
-            .from('product_variant_country_prices')
-            .upsert(rows, { onConflict: 'variant_id,country_id' });
-
-          if (vpErr) {
-            console.warn('[useBooks] product_variant_country_prices fallback:', vpErr.message);
-          }
-        }
-      }
+      // A product that has variants must not keep a base inventory row; it causes duplicate inventory display.
+      await supabase
+        .from('product_inventory')
+        .delete()
+        .eq('product_id', productId)
+        .is('variant_id', null)
+        .then(() => {})
+        .catch(() => {});
 
       // Electronic book entry
-      const hasDigital = input.variants.some((v) => v.variant_type === 'رقمي');
+      const hasDigital = normalizedVariants.some((v) => v.variant_type === 'رقمي');
       if (hasDigital) {
         const ebookPayload = {
           product_id: productId,
@@ -529,6 +651,7 @@ export function useUpsertProduct() {
     },
     onSuccess: (_, input) => {
       qc.invalidateQueries({ queryKey: ['products'] });
+      qc.invalidateQueries({ queryKey: ['inventory'] });
       qc.invalidateQueries({ queryKey: ['dashboard'] });
       qc.invalidateQueries({ queryKey: ['analytics'] });
       toast.success(input.id ? 'تم تحديث الكتاب بنجاح' : 'تم إضافة الكتاب بنجاح');
@@ -544,6 +667,7 @@ export function useDeleteProduct() {
   return useMutation({
     mutationFn: async (id: string) => {
       await supabase.from('product_country_prices').delete().eq('product_id', id).then(() => {}).catch(() => {});
+      await supabase.from('product_inventory').delete().eq('product_id', id).then(() => {}).catch(() => {});
       await supabase.from('product_variants').select('id').eq('product_id', id).then(async ({ data }) => {
         const variantIds = (data ?? []).map((v: any) => v.id);
         if (variantIds.length > 0) {
@@ -556,6 +680,7 @@ export function useDeleteProduct() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['products'] });
+      qc.invalidateQueries({ queryKey: ['inventory'] });
       toast.success('تم حذف الكتاب');
     },
     onError: (e: Error) => toast.error(e.message),
@@ -577,6 +702,7 @@ export function useToggleProductStatus() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['products'] });
+      qc.invalidateQueries({ queryKey: ['inventory'] });
       toast.success('تم تحديث حالة الكتاب');
     },
     onError: (e: Error) => toast.error(e.message),

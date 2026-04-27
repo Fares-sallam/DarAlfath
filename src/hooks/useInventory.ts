@@ -13,6 +13,8 @@ export interface InventoryRow {
   reserved_stock: number;
   min_stock: number;
   updated_at: string;
+  isDigital?: boolean;
+  isVirtual?: boolean;
   products: {
     id: string;
     title: string;
@@ -30,6 +32,9 @@ export interface InventoryRow {
     variant_type: string;
     sku?: string | null;
     price?: number;
+    cost_price?: number | null;
+    base_price?: number | null;
+    sale_price?: number | null;
   } | null;
   countries: {
     id: string;
@@ -46,23 +51,41 @@ export interface EnrichedInventoryRow extends InventoryRow {
   stockPct: number;
 }
 
-type CountryPriceRow = {
+type CountryRow = {
+  id: string;
+  name: string;
+  currency_symbol: string;
+};
+
+type VariantRow = {
+  id: string;
   product_id: string;
-  country_id: string;
-  cost_price: number;
-  base_price: number;
+  variant_name: string;
+  variant_type: string;
+  sku?: string | null;
+  price?: number;
+  cost_price?: number | null;
+  base_price?: number | null;
   sale_price?: number | null;
+  products: InventoryRow['products'];
 };
 
 type VariantCountryPriceRow = {
   variant_id: string;
   country_id: string;
   price: number;
+  cost_price?: number | null;
+  base_price?: number | null;
+  sale_price?: number | null;
 };
+
+function isDigitalRow(row: InventoryRow): boolean {
+  return row.isDigital === true || row.product_variants?.variant_type === 'رقمي';
+}
 
 /* ── Derive alert level ── */
 function getAlertLevel(row: InventoryRow): AlertLevel {
-  if (row.products?.type === 'رقمي') return 'رقمي';
+  if (isDigitalRow(row)) return 'رقمي';
 
   const avail = row.stock - row.reserved_stock;
   if (avail <= 0) return 'حرج';
@@ -72,40 +95,31 @@ function getAlertLevel(row: InventoryRow): AlertLevel {
 }
 
 function enrich(row: InventoryRow): EnrichedInventoryRow {
-  const availableStock = Math.max(0, row.stock - row.reserved_stock);
+  const digital = isDigitalRow(row);
+  const availableStock = digital ? Number.POSITIVE_INFINITY : Math.max(0, row.stock - row.reserved_stock);
   const alertLevel = getAlertLevel(row);
   const maxForBar = Math.max(row.min_stock * 3, row.stock, 1);
 
-  const stockPct =
-    row.products?.type === 'رقمي'
-      ? 100
-      : Math.round(Math.min((availableStock / maxForBar) * 100, 100));
+  const stockPct = digital ? 100 : Math.round(Math.min((availableStock / maxForBar) * 100, 100));
 
-  return { ...row, availableStock, alertLevel, stockPct };
+  return { ...row, isDigital: digital, availableStock, alertLevel, stockPct };
 }
 
-async function fetchCountryPriceMap(
-  productIds: string[],
-  selectedCountryId?: string | null
-): Promise<Record<string, CountryPriceRow>> {
-  if (!selectedCountryId || productIds.length === 0) return {};
+async function resolveCountry(selectedCountry?: CountryRow | null): Promise<CountryRow | null> {
+  if (selectedCountry?.id) return selectedCountry;
 
   const { data, error } = await supabase
-    .from('product_country_prices')
-    .select('product_id, country_id, cost_price, base_price, sale_price')
-    .eq('country_id', selectedCountryId)
-    .in('product_id', productIds);
+    .from('countries')
+    .select('id, name, currency_symbol')
+    .eq('code', 'EG')
+    .maybeSingle();
 
   if (error) {
-    console.warn('[useInventory] product_country_prices fallback:', error.message);
-    return {};
+    console.warn('[useInventory] failed to resolve EG country:', error.message);
+    return null;
   }
 
-  const map: Record<string, CountryPriceRow> = {};
-  for (const row of (data ?? []) as CountryPriceRow[]) {
-    map[row.product_id] = row;
-  }
-  return map;
+  return (data as CountryRow | null) ?? null;
 }
 
 async function fetchVariantCountryPriceMap(
@@ -116,7 +130,7 @@ async function fetchVariantCountryPriceMap(
 
   const { data, error } = await supabase
     .from('product_variant_country_prices')
-    .select('variant_id, country_id, price')
+    .select('variant_id, country_id, price, cost_price, base_price, sale_price')
     .eq('country_id', selectedCountryId)
     .in('variant_id', variantIds);
 
@@ -132,74 +146,128 @@ async function fetchVariantCountryPriceMap(
   return map;
 }
 
-/* ── Fetch inventory (country-aware) ── */
+function applyVariantPrice(row: VariantRow, override?: VariantCountryPriceRow): InventoryRow['product_variants'] {
+  const base = override?.base_price ?? row.base_price ?? row.price ?? 0;
+  const sale = override?.sale_price ?? row.sale_price ?? override?.price ?? row.price ?? base;
+
+  return {
+    id: row.id,
+    variant_name: row.variant_name,
+    variant_type: row.variant_type,
+    sku: row.sku,
+    cost_price: override?.cost_price ?? row.cost_price ?? 0,
+    base_price: base,
+    sale_price: sale,
+    price: sale,
+  };
+}
+
+/* ── Fetch inventory (country-aware, variant-first) ── */
 export function useInventory() {
   const { selectedCountry } = useCountry();
 
   return useQuery({
-    queryKey: ['inventory', selectedCountry?.id ?? 'all'],
+    queryKey: ['inventory', selectedCountry?.id ?? 'EG'],
     queryFn: async (): Promise<EnrichedInventoryRow[]> => {
-      let query = supabase
-        .from('product_inventory')
-        .select(`
-          id,
-          product_id,
-          variant_id,
-          country_id,
-          stock,
-          reserved_stock,
-          min_stock,
-          updated_at,
-          products(id, title, author, cover_url, type, cost_price, base_price, sale_price, is_active),
-          product_variants(id, variant_name, variant_type, sku, price),
-          countries(id, name, currency_symbol)
-        `)
-        .order('updated_at', { ascending: false });
+      const country = await resolveCountry(selectedCountry as CountryRow | null);
+      if (!country?.id) return [];
 
-      if (selectedCountry?.id) {
-        query = query.eq('country_id', selectedCountry.id);
-      }
-
-      const { data, error } = await query;
-      if (error) throw error;
-
-      const rows = (data ?? []) as InventoryRow[];
-      if (rows.length === 0) return [];
-
-      const productIds = Array.from(new Set(rows.map((r) => r.product_id).filter(Boolean)));
-      const variantIds = Array.from(
-        new Set(rows.map((r) => r.variant_id).filter(Boolean) as string[])
-      );
-
-      const [countryPriceMap, variantPriceMap] = await Promise.all([
-        fetchCountryPriceMap(productIds, selectedCountry?.id),
-        fetchVariantCountryPriceMap(variantIds, selectedCountry?.id),
+      const [inventoryResult, variantsResult] = await Promise.all([
+        supabase
+          .from('product_inventory')
+          .select(`
+            id,
+            product_id,
+            variant_id,
+            country_id,
+            stock,
+            reserved_stock,
+            min_stock,
+            updated_at,
+            products(id, title, author, cover_url, type, cost_price, base_price, sale_price, is_active),
+            product_variants(id, variant_name, variant_type, sku, price, cost_price, base_price, sale_price),
+            countries(id, name, currency_symbol)
+          `)
+          .eq('country_id', country.id)
+          .order('updated_at', { ascending: false }),
+        supabase
+          .from('product_variants')
+          .select(`
+            id,
+            product_id,
+            variant_name,
+            variant_type,
+            sku,
+            price,
+            cost_price,
+            base_price,
+            sale_price,
+            products(id, title, author, cover_url, type, cost_price, base_price, sale_price, is_active)
+          `),
       ]);
 
-      const withScopedPrices = rows.map((row) => {
-        const productOverride = countryPriceMap[row.product_id];
-        const variantOverride = row.variant_id ? variantPriceMap[row.variant_id] : undefined;
+      if (inventoryResult.error) throw inventoryResult.error;
+      if (variantsResult.error) throw variantsResult.error;
 
-        return {
-          ...row,
-          products: row.products
-            ? {
-                ...row.products,
-                cost_price: productOverride?.cost_price ?? row.products.cost_price,
-                base_price: productOverride?.base_price ?? row.products.base_price,
-                sale_price: productOverride?.sale_price ?? row.products.sale_price,
-              }
-            : null,
-          product_variants: row.product_variants
-            ? {
-                ...row.product_variants,
-                price: variantOverride?.price ?? row.product_variants.price,
-              }
-            : undefined,
-        };
-      });
+      const inventoryRows = (inventoryResult.data ?? []) as InventoryRow[];
+      const variants = ((variantsResult.data ?? []) as VariantRow[]).filter((v) => v.products?.is_active !== false);
+      const variantIds = variants.map((v) => v.id);
+      const variantPriceMap = await fetchVariantCountryPriceMap(variantIds, country.id);
 
-      return withScopedPrices.map(enrich);
+      const variantProductIds = new Set(variants.map((v) => v.product_id));
+      const inventoryByVariant = new Map<string, InventoryRow>();
+      const result: InventoryRow[] = [];
+
+      for (const row of inventoryRows) {
+        if (row.variant_id) {
+          inventoryByVariant.set(row.variant_id, row);
+          continue;
+        }
+
+        // Do not show the old/base inventory row if the product already has explicit variants.
+        if (variantProductIds.has(row.product_id)) continue;
+
+        result.push({ ...row, isDigital: false, isVirtual: false });
+      }
+
+      for (const variant of variants) {
+        const override = variantPriceMap[variant.id];
+        const pricedVariant = applyVariantPrice(variant, override);
+        const isDigital = variant.variant_type === 'رقمي';
+        const existingInventory = inventoryByVariant.get(variant.id);
+
+        if (existingInventory) {
+          result.push({
+            ...existingInventory,
+            product_variants: pricedVariant,
+            products: existingInventory.products ?? variant.products,
+            countries: existingInventory.countries ?? country,
+            isDigital,
+            isVirtual: false,
+          });
+          continue;
+        }
+
+        // Digital variants do not have physical inventory; show them as unlimited virtual rows.
+        // Physical variants missing inventory are shown as zero rows so the admin can create/update them.
+        result.push({
+          id: `${isDigital ? 'digital' : 'missing'}-${variant.id}`,
+          product_id: variant.product_id,
+          variant_id: variant.id,
+          country_id: country.id,
+          stock: 0,
+          reserved_stock: 0,
+          min_stock: isDigital ? 0 : 5,
+          updated_at: new Date().toISOString(),
+          isDigital,
+          isVirtual: true,
+          products: variant.products,
+          product_variants: pricedVariant,
+          countries: country,
+        });
+      }
+
+      return result.map(enrich);
     },
   });
 }
@@ -207,6 +275,9 @@ export function useInventory() {
 /* ── Update stock quantity ── */
 export interface UpdateStockInput {
   id: string;
+  product_id: string;
+  variant_id?: string | null;
+  country_id: string;
   stock: number;
   min_stock?: number;
 }
@@ -218,6 +289,25 @@ export function useUpdateStock() {
     mutationFn: async (input: UpdateStockInput) => {
       const patch: Record<string, number> = { stock: input.stock };
       if (input.min_stock !== undefined) patch.min_stock = input.min_stock;
+
+      if (input.id.startsWith('missing-')) {
+        const { error } = await supabase
+          .from('product_inventory')
+          .upsert(
+            {
+              product_id: input.product_id,
+              variant_id: input.variant_id,
+              country_id: input.country_id,
+              stock: input.stock,
+              reserved_stock: 0,
+              min_stock: input.min_stock ?? 5,
+            },
+            { onConflict: 'product_id,country_id,variant_id' }
+          );
+
+        if (error) throw error;
+        return;
+      }
 
       const { error } = await supabase
         .from('product_inventory')
@@ -258,7 +348,8 @@ export function exportInventoryCsv(rows: EnrichedInventoryRow[]) {
     'المؤلف',
     'النسخة',
     'الدولة',
-    'النوع',
+    'نوع النسخة',
+    'السعر',
     'المخزون الفعلي',
     'المحجوز',
     'المتاح',
@@ -272,11 +363,12 @@ export function exportInventoryCsv(rows: EnrichedInventoryRow[]) {
     r.products?.author ?? '',
     r.product_variants?.variant_name ?? 'أساسي',
     r.countries?.name ?? '',
-    r.products?.type ?? '',
-    r.stock,
-    r.reserved_stock,
-    r.availableStock,
-    r.min_stock,
+    r.product_variants?.variant_type ?? r.products?.type ?? '',
+    r.product_variants?.price ?? r.products?.sale_price ?? r.products?.base_price ?? '',
+    r.isDigital ? 'غير محدود' : r.stock,
+    r.isDigital ? '' : r.reserved_stock,
+    r.isDigital ? '∞' : r.availableStock,
+    r.isDigital ? '' : r.min_stock,
     r.alertLevel,
     new Date(r.updated_at).toLocaleDateString('ar-EG'),
   ]);

@@ -37,6 +37,7 @@ function StockEditor({ row, onClose }: StockEditorProps) {
   const updateMutation = useUpdateStock();
   const [stock, setStock] = useState(row.stock);
   const [minStock, setMinStock] = useState(row.min_stock);
+  const isDigital = row.isDigital || row.product_variants?.variant_type === 'رقمي';
 
   const handleSave = async () => {
     if (stock < 0) {
@@ -48,7 +49,14 @@ function StockEditor({ row, onClose }: StockEditorProps) {
       return;
     }
 
-    await updateMutation.mutateAsync({ id: row.id, stock, min_stock: minStock });
+    await updateMutation.mutateAsync({
+      id: row.id,
+      product_id: row.product_id,
+      variant_id: row.variant_id ?? null,
+      country_id: row.country_id,
+      stock,
+      min_stock: minStock,
+    });
     onClose();
   };
 
@@ -85,6 +93,11 @@ function StockEditor({ row, onClose }: StockEditorProps) {
           </div>
         </div>
 
+        {isDigital ? (
+          <div className="bg-purple-50 border border-purple-100 rounded-2xl p-4 text-sm text-purple-700 font-semibold">
+            هذه نسخة رقمية، لذلك لا يوجد لها مخزون فعلي. تظهر في إدارة المخزون كـ "غير محدود" فقط.
+          </div>
+        ) : (
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-semibold text-gray-700 mb-2">المخزون الفعلي</label>
@@ -145,11 +158,13 @@ function StockEditor({ row, onClose }: StockEditorProps) {
           </div>
         </div>
 
+        )}
+
         <div className="flex gap-2 mt-6">
           <button onClick={onClose} className="btn-secondary flex-1">إلغاء</button>
           <button
             onClick={handleSave}
-            disabled={updateMutation.isPending}
+            disabled={updateMutation.isPending || isDigital}
             className="btn-primary flex-1 flex items-center justify-center gap-1.5"
           >
             {updateMutation.isPending ? (
@@ -206,7 +221,8 @@ export default function Inventory() {
         (r.product_variants?.variant_name ?? '').toLowerCase().includes(q);
 
       const matchAlert = filterAlert === 'الكل' || r.alertLevel === filterAlert;
-      const matchType = filterType === 'الكل' || r.products?.type === filterType;
+      const rowType = r.product_variants?.variant_type ?? r.products?.type;
+      const matchType = filterType === 'الكل' || rowType === filterType;
 
       return matchQ && matchAlert && matchType;
     })
@@ -223,7 +239,7 @@ export default function Inventory() {
 
   const critical = rows.filter((r) => r.alertLevel === 'حرج');
   const low = rows.filter((r) => r.alertLevel === 'منخفض');
-  const digital = rows.filter((r) => r.products?.type === 'رقمي');
+  const digital = rows.filter((r) => r.alertLevel === 'رقمي');
 
   const handleExport = () => {
     exportInventoryCsv(filtered);
@@ -448,9 +464,8 @@ export default function Inventory() {
 
           <select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="input-field md:w-40">
             <option>الكل</option>
-            <option>ورقي</option>
+            <option>مادي</option>
             <option>رقمي</option>
-            <option>ورقي ورقمي</option>
           </select>
         </div>
 
@@ -530,7 +545,7 @@ export default function Inventory() {
                   <tbody>
                     {filtered.map((row) => {
                       const cfg = alertConfig[row.alertLevel];
-                      const isDigital = row.products?.type === 'رقمي';
+                      const isDigital = row.isDigital || row.product_variants?.variant_type === 'رقمي';
                       const currency = row.countries?.currency_symbol ?? currencySymbol ?? 'ج.م';
                       const price =
                         row.product_variants?.price ??
@@ -582,13 +597,13 @@ export default function Inventory() {
 
                           <td className="px-4 py-3">
                             <span className={`status-badge text-xs ${
-                              row.products?.type === 'رقمي'
+                              isDigital
                                 ? 'bg-purple-100 text-purple-700'
-                                : row.products?.type === 'ورقي ورقمي'
-                                ? 'bg-teal-100 text-teal-700'
-                                : 'bg-blue-100 text-blue-700'
+                                : row.product_variants?.variant_type === 'مادي'
+                                ? 'bg-blue-100 text-blue-700'
+                                : 'bg-gray-100 text-gray-600'
                             }`}>
-                              {row.products?.type ?? '—'}
+                              {row.product_variants?.variant_type ?? row.products?.type ?? '—'}
                             </span>
                           </td>
 
