@@ -282,7 +282,7 @@ async function fetchVariantInventoryMap(
   return map;
 }
 
-/* ── Fetch all products (country-aware prices and variant stock) ── */
+/* ── Fetch all products (global book data + selected-country prices) ── */
 export function useProducts() {
   const { selectedCountry } = useCountry();
 
@@ -290,6 +290,8 @@ export function useProducts() {
     queryKey: ['products', selectedCountry?.id ?? 'all'],
     staleTime: 60_000,
     queryFn: async (): Promise<Product[]> => {
+      const selectedCountryId = selectedCountry?.id ?? null;
+
       const { data, error } = await supabase
         .from('products')
         .select(`
@@ -311,15 +313,14 @@ export function useProducts() {
       const productIds = products.map((p) => p.id);
       const allVariantIds = products.flatMap((p) => (p.product_variants ?? []).map((v) => v.id));
 
-      const [imagesResult, countryPriceMap, variantPriceMap, variantInventoryMap] = await Promise.all([
+      const [imagesResult, variantPriceMap, variantInventoryMap] = await Promise.all([
         supabase
           .from('product_images')
           .select('id, product_id, url, alt_text, sort_order, is_primary, created_at')
           .in('product_id', productIds)
           .order('sort_order'),
-        fetchCountryPriceMap(productIds, selectedCountry?.id),
-        fetchVariantCountryPriceMap(allVariantIds, selectedCountry?.id),
-        fetchVariantInventoryMap(allVariantIds, selectedCountry?.id),
+        fetchVariantCountryPriceMap(allVariantIds, selectedCountryId),
+        fetchVariantInventoryMap(allVariantIds, selectedCountryId),
       ]);
 
       const imagesByProduct: Record<string, ProductImage[]> = {};
@@ -329,31 +330,58 @@ export function useProducts() {
       }
 
       return products.map((p) => {
-        const priceOverride = countryPriceMap[p.id];
-        const finalCost = priceOverride?.cost_price ?? p.cost_price;
-        const finalBase = priceOverride?.base_price ?? p.base_price;
-        const finalSale = priceOverride?.sale_price ?? p.sale_price ?? undefined;
-        const finalProfit = (finalSale ?? finalBase) - finalCost;
-
         const scopedVariants = (p.product_variants ?? []).map((v) => {
-          const override = variantPriceMap[v.id];
-          const inv = variantInventoryMap[v.id];
-          const cost = override?.cost_price ?? v.cost_price ?? 0;
-          const base = override?.base_price ?? v.base_price ?? v.price ?? 0;
-          const sale = override?.sale_price ?? v.sale_price ?? override?.price ?? v.price ?? base;
+          const override = selectedCountryId ? variantPriceMap[v.id] : undefined;
+          const inv = selectedCountryId ? variantInventoryMap[v.id] : undefined;
+
+          const fallbackCost = num(v.cost_price, 0);
+          const fallbackBase = num(v.base_price ?? v.price, 0);
+          const fallbackSale = normalizeSale(fallbackBase, v.sale_price ?? v.price ?? fallbackBase);
+
+          // When a country is selected, do NOT fall back to another country's/global price.
+          // Missing country price should appear as 0 so the admin knows this country needs pricing.
+          const cost = selectedCountryId ? num(override?.cost_price, 0) : fallbackCost;
+          const base = selectedCountryId ? num(override?.base_price, 0) : fallbackBase;
+          const sale = selectedCountryId
+            ? num(override?.sale_price ?? override?.price, 0)
+            : fallbackSale;
 
           return {
             ...v,
             cost_price: cost,
             base_price: base,
-            sale_price: sale,
-            price: sale,
+            sale_price: sale > 0 ? sale : null,
+            price: sale > 0 ? sale : 0,
             stock: inv?.stock ?? null,
             reserved_stock: inv?.reserved_stock ?? null,
             min_stock: inv?.min_stock ?? null,
-            country_id: inv?.country_id ?? selectedCountry?.id ?? null,
+            country_id: selectedCountryId,
           };
         });
+
+        const pricedVariants = scopedVariants.filter(
+          (v) => num(v.sale_price ?? v.price, 0) > 0
+        );
+
+        const finalCost = pricedVariants.length
+          ? Math.min(...pricedVariants.map((v) => num(v.cost_price, 0)))
+          : selectedCountryId
+            ? 0
+            : p.cost_price;
+
+        const finalBase = pricedVariants.length
+          ? Math.max(...pricedVariants.map((v) => num(v.base_price ?? v.price, 0)))
+          : selectedCountryId
+            ? 0
+            : p.base_price;
+
+        const finalSale = pricedVariants.length
+          ? Math.min(...pricedVariants.map((v) => num(v.sale_price ?? v.price, 0)))
+          : selectedCountryId
+            ? undefined
+            : p.sale_price ?? undefined;
+
+        const finalProfit = finalSale ? finalSale - finalCost : 0;
 
         return {
           ...p,

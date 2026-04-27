@@ -146,19 +146,29 @@ async function fetchVariantCountryPriceMap(
   return map;
 }
 
-function applyVariantPrice(row: VariantRow, override?: VariantCountryPriceRow): InventoryRow['product_variants'] {
-  const base = override?.base_price ?? row.base_price ?? row.price ?? 0;
-  const sale = override?.sale_price ?? row.sale_price ?? override?.price ?? row.price ?? base;
+function applyVariantPrice(
+  row: VariantRow,
+  override?: VariantCountryPriceRow,
+  strictCountryPrice = true
+): InventoryRow['product_variants'] {
+  const fallbackBase = row.base_price ?? row.price ?? 0;
+  const fallbackSale = row.sale_price ?? row.price ?? fallbackBase;
+
+  // In country mode, a missing country price must be shown as 0, not copied from Egypt/global.
+  const base = strictCountryPrice ? (override?.base_price ?? 0) : fallbackBase;
+  const sale = strictCountryPrice
+    ? (override?.sale_price ?? override?.price ?? 0)
+    : fallbackSale;
 
   return {
     id: row.id,
     variant_name: row.variant_name,
     variant_type: row.variant_type,
     sku: row.sku,
-    cost_price: override?.cost_price ?? row.cost_price ?? 0,
+    cost_price: strictCountryPrice ? (override?.cost_price ?? 0) : (row.cost_price ?? 0),
     base_price: base,
-    sale_price: sale,
-    price: sale,
+    sale_price: sale || null,
+    price: sale || 0,
   };
 }
 
