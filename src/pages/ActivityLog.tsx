@@ -68,6 +68,8 @@ function useAuditLogs(filters: LogFilters) {
   return useQuery({
     queryKey: ['audit-logs', filters],
     queryFn: async (): Promise<AuditLog[]> => {
+
+      // ── محاولة 1: جلب السجلات مع join لجدول profiles ──────────
       let query = supabase
         .from('audit_logs')
         .select(`
@@ -80,23 +82,15 @@ function useAuditLogs(filters: LogFilters) {
           new_data,
           ip_address,
           created_at,
-          profiles(full_name, avatar_url, role)
+          profiles!user_id(full_name, avatar_url, role)
         `)
         .order('created_at', { ascending: false })
         .limit(500);
 
-      if (filters.action && filters.action !== 'الكل') {
-        query = query.eq('action', filters.action);
-      }
-      if (filters.tableName && filters.tableName !== 'الكل') {
-        query = query.eq('table_name', filters.tableName);
-      }
-      if (filters.userId && filters.userId !== 'الكل') {
-        query = query.eq('user_id', filters.userId);
-      }
-      if (filters.dateFrom) {
-        query = query.gte('created_at', new Date(filters.dateFrom).toISOString());
-      }
+      if (filters.action && filters.action !== 'الكل')   query = query.eq('action', filters.action);
+      if (filters.tableName && filters.tableName !== 'الكل') query = query.eq('table_name', filters.tableName);
+      if (filters.userId   && filters.userId   !== 'الكل') query = query.eq('user_id',    filters.userId);
+      if (filters.dateFrom) query = query.gte('created_at', new Date(filters.dateFrom).toISOString());
       if (filters.dateTo) {
         const to = new Date(filters.dateTo);
         to.setHours(23, 59, 59, 999);
@@ -104,9 +98,35 @@ function useAuditLogs(filters: LogFilters) {
       }
 
       const { data, error } = await query;
-      if (error) throw error;
 
-      return (data ?? []) as AuditLog[];
+      if (!error) return (data ?? []) as AuditLog[];
+
+      // ── محاولة 2: بدون join (إذا فشل الـ FK hint) ──────────────
+      console.warn('[ActivityLog] join failed → retrying without profiles:', error.message, error.code);
+
+      let fallback = supabase
+        .from('audit_logs')
+        .select('id, user_id, action, table_name, record_id, old_data, new_data, ip_address, created_at')
+        .order('created_at', { ascending: false })
+        .limit(500);
+
+      if (filters.action   && filters.action   !== 'الكل') fallback = fallback.eq('action',     filters.action);
+      if (filters.tableName && filters.tableName !== 'الكل') fallback = fallback.eq('table_name', filters.tableName);
+      if (filters.dateFrom) fallback = fallback.gte('created_at', new Date(filters.dateFrom).toISOString());
+      if (filters.dateTo) {
+        const to = new Date(filters.dateTo);
+        to.setHours(23, 59, 59, 999);
+        fallback = fallback.lte('created_at', to.toISOString());
+      }
+
+      const { data: fbData, error: fbError } = await fallback;
+
+      if (fbError) {
+        console.error('[ActivityLog] fallback also failed:', fbError.message, fbError.code, fbError.details);
+        throw new Error(`${fbError.message} (${fbError.code ?? 'unknown'})`);
+      }
+
+      return (fbData ?? []) as AuditLog[];
     },
   });
 }
@@ -368,7 +388,7 @@ export default function ActivityLog() {
     dateTo: dateTo || undefined,
   };
 
-  const { data: logs = [], isLoading, isError, refetch } = useAuditLogs(filters);
+  const { data: logs = [], isLoading, isError, error: queryError, refetch } = useAuditLogs(filters);
 
   const filtered = logs.filter((l) => {
     const matchCountry = logMatchesSelectedCountry(l, selectedCountry?.id);
@@ -544,9 +564,21 @@ export default function ActivityLog() {
           <div className="flex flex-col items-center justify-center py-20 gap-3 text-amber-500">
             <AlertCircle size={32} />
             <span className="font-semibold">لا يمكن تحميل سجل النشاط</span>
-            <p className="text-sm text-gray-400 text-center max-w-xs">
-              تأكد من أنك تمتلك صلاحية super_admin أو admin للوصول لهذه البيانات
-            </p>
+            {queryError instanceof Error && (
+              <p className="text-xs font-mono bg-amber-50 border border-amber-200 text-amber-700 rounded-xl px-4 py-2 max-w-md text-center break-all">
+                {queryError.message}
+              </p>
+            )}
+            <div className="text-sm text-gray-400 text-center max-w-sm space-y-1 mt-1">
+              <p>إذا ظهر خطأ <strong className="text-gray-600">PGRST200</strong> أو <strong className="text-gray-600">relation not found</strong>:</p>
+              <p>اذهب إلى لوحة Supabase ← <strong className="text-gray-600">Project Settings → API</strong> ← اضغط <strong className="text-gray-600">Reload Schema Cache</strong></p>
+            </div>
+            <button
+              onClick={() => refetch()}
+              className="mt-2 btn-secondary text-sm flex items-center gap-2"
+            >
+              <RefreshCw size={14} /> إعادة المحاولة
+            </button>
           </div>
         )}
 
