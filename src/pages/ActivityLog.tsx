@@ -15,6 +15,7 @@ import { useCountry } from '@/contexts/CountryContext';
 interface AuditLog {
   id: string;
   user_id?: string | null;
+  user_email?: string | null;
   action: string;
   table_name?: string | null;
   record_id?: string | null;
@@ -75,6 +76,7 @@ function useAuditLogs(filters: LogFilters) {
         .select(`
           id,
           user_id,
+          user_email,
           action,
           table_name,
           record_id,
@@ -107,7 +109,7 @@ function useAuditLogs(filters: LogFilters) {
 
       let fallback = supabase
         .from('audit_logs')
-        .select('id, user_id, action, table_name, record_id, old_data, new_data, ip_address, created_at')
+        .select('id, user_id, user_email, action, table_name, record_id, old_data, new_data, ip_address, created_at')
         .order('created_at', { ascending: false })
         .limit(500);
 
@@ -276,7 +278,9 @@ function LogRow({ log }: { log: AuditLog }) {
   };
 
   const tableName = tableLabels[log.table_name ?? ''] ?? log.table_name ?? '—';
-  const userName = log.profiles?.full_name ?? 'النظام';
+  const userName = log.profiles?.full_name ?? log.user_email ?? 'النظام';
+  const userSub  = log.profiles?.full_name && log.user_email ? log.user_email
+                 : log.profiles?.role ?? null;
   const hasData = !!(log.old_data || log.new_data);
 
   return (
@@ -304,7 +308,7 @@ function LogRow({ log }: { log: AuditLog }) {
 
             <div className="min-w-0">
               <p className="text-sm font-semibold text-gray-800 truncate">{userName}</p>
-              {log.profiles?.role && <p className="text-xs text-gray-400">{log.profiles.role}</p>}
+              {userSub && <p className="text-xs text-gray-400 truncate">{userSub}</p>}
             </div>
           </div>
         </td>
@@ -366,7 +370,7 @@ function exportCsv(logs: AuditLog[]) {
   const headers = ['الإجراء', 'المستخدم', 'الجدول', 'رقم السجل', 'عنوان IP', 'التاريخ والوقت'];
   const rows = logs.map((l) => [
     actionConfig[l.action]?.label ?? l.action,
-    l.profiles?.full_name ?? 'النظام',
+    l.profiles?.full_name ?? l.user_email ?? 'النظام',
     tableLabels[l.table_name ?? ''] ?? l.table_name ?? '',
     l.record_id ?? '',
     String(l.ip_address ?? ''),
@@ -419,6 +423,7 @@ export default function ActivityLog() {
 
     return (
       (l.profiles?.full_name ?? '').toLowerCase().includes(q) ||
+      (l.user_email ?? '').toLowerCase().includes(q) ||
       (tableLabels[l.table_name ?? ''] ?? l.table_name ?? '').includes(q) ||
       (l.record_id ?? '').includes(q) ||
       String(l.ip_address ?? '').includes(q)
