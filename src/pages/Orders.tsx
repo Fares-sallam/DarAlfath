@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import * as XLSX from 'xlsx';
 import Layout from '@/components/layout/Layout';
 import {
   Search, Eye, Download, Printer, MessageCircle, Truck, X,
@@ -425,6 +426,25 @@ export default function Orders() {
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [showFilters, setShowFilters] = useState(false);
 
+  /* ── Quick period helpers ── */
+  const applyPeriod = (p: 'اليوم' | 'أمس' | 'هذا الأسبوع' | 'هذا الشهر' | 'يوم محدد', specificDay?: string) => {
+    const now = new Date();
+    const fmt = (d: Date) => d.toISOString().slice(0, 10);
+    if (p === 'اليوم') { setDateFrom(fmt(now)); setDateTo(fmt(now)); }
+    else if (p === 'أمس') { const y = new Date(now); y.setDate(y.getDate() - 1); setDateFrom(fmt(y)); setDateTo(fmt(y)); }
+    else if (p === 'هذا الأسبوع') {
+      const start = new Date(now); start.setDate(now.getDate() - now.getDay());
+      setDateFrom(fmt(start)); setDateTo(fmt(now));
+    }
+    else if (p === 'هذا الشهر') {
+      const start = new Date(now.getFullYear(), now.getMonth(), 1);
+      setDateFrom(fmt(start)); setDateTo(fmt(now));
+    }
+    else if (p === 'يوم محدد' && specificDay) { setDateFrom(specificDay); setDateTo(specificDay); }
+  };
+  const [specificDay, setSpecificDay] = useState('');
+  const [showDayPicker, setShowDayPicker] = useState(false);
+
   const filters: OrderFilters = {
     status: filterStatus,
     paymentStatus: filterPayStatus,
@@ -475,24 +495,88 @@ export default function Orders() {
             </div>
           </div>
 
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <button
-              onClick={() => {
-                qc.invalidateQueries({ queryKey: ['orders'] });
-                toast.info('جارٍ التحديث...');
-              }}
+              onClick={() => { qc.invalidateQueries({ queryKey: ['orders'] }); toast.info('جارٍ التحديث...'); }}
               className="p-2.5 rounded-xl border border-gray-200 bg-white hover:bg-gray-50 text-gray-500 transition-colors"
               title="تحديث"
             >
               <RefreshCw size={16} />
             </button>
 
+            {/* ── Export CSV ── */}
+            <button onClick={() => exportOrdersCsv(filtered)} className="btn-secondary flex items-center gap-1.5 text-sm">
+              <Download size={14} /> CSV
+            </button>
+
+            {/* ── Export Excel ── */}
             <button
-              onClick={() => exportOrdersCsv(filtered)}
-              className="btn-secondary flex items-center gap-2"
+              onClick={() => {
+                const wb = XLSX.utils.book_new();
+                const ws = XLSX.utils.aoa_to_sheet([
+                  ['رقم الطلب', 'العميل', 'الحالة', 'حالة الدفع', `الإجمالي (${currency})`, 'المدينة', 'التاريخ'],
+                  ...filtered.map((o) => [
+                    o.id.slice(0, 8),
+                    o.profiles?.full_name ?? '—',
+                    o.status,
+                    o.payment_status,
+                    o.total_price,
+                    o.shipping_address?.city ?? o.shipping_address?.governorate ?? '—',
+                    new Date(o.created_at).toLocaleDateString('ar-EG'),
+                  ]),
+                ]);
+                ws['!cols'] = [{ wch: 12 }, { wch: 22 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 14 }];
+                XLSX.utils.book_append_sheet(wb, ws, 'الطلبات');
+                XLSX.writeFile(wb, `طلبات-دار-الفتح-${new Date().toISOString().slice(0, 10)}.xlsx`);
+                toast.success('تم تصدير Excel');
+              }}
+              className="btn-secondary flex items-center gap-1.5 text-sm"
             >
-              <Download size={15} />
-              تصدير CSV
+              <Download size={14} /> Excel
+            </button>
+
+            {/* ── Export PDF ── */}
+            <button
+              onClick={() => {
+                const pw = window.open('', '_blank', 'width=900,height=700');
+                if (!pw) { toast.error('يرجى السماح بالنوافذ المنبثقة'); return; }
+                const rows = filtered.map((o) => `
+                  <tr>
+                    <td>${o.id.slice(0, 8)}</td>
+                    <td>${o.profiles?.full_name ?? '—'}</td>
+                    <td>${o.status}</td>
+                    <td>${o.payment_status}</td>
+                    <td>${o.total_price.toLocaleString()} ${currency}</td>
+                    <td>${o.shipping_address?.city ?? o.shipping_address?.governorate ?? '—'}</td>
+                    <td>${new Date(o.created_at).toLocaleDateString('ar-EG')}</td>
+                  </tr>`).join('');
+                pw.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="UTF-8"/>
+                  <title>تقرير الطلبات</title>
+                  <style>
+                    @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;900&display=swap');
+                    *{margin:0;padding:0;box-sizing:border-box}
+                    body{font-family:'Cairo',Arial,sans-serif;direction:rtl;padding:24px;font-size:12px;color:#1e293b}
+                    h1{font-size:18px;font-weight:900;color:#1d4ed8;margin-bottom:4px}
+                    .meta{color:#64748b;font-size:11px;margin-bottom:16px}
+                    table{width:100%;border-collapse:collapse}
+                    th{background:#1d4ed8;color:#fff;padding:8px;text-align:right;font-size:11px}
+                    td{padding:7px 8px;border-bottom:1px solid #f1f5f9;font-size:11px}
+                    tr:nth-child(even) td{background:#f8fafc}
+                    @media print{body{padding:12px}}
+                  </style></head><body>
+                  <h1>تقرير الطلبات — دار الفتح</h1>
+                  <p class="meta">إجمالي الطلبات: ${filtered.length} · الإيرادات: ${totalRevenue.toLocaleString()} ${currency} · ${selectedCountry?.name ?? 'كل الدول'} · ${new Date().toLocaleDateString('ar-EG')}</p>
+                  <table>
+                    <tr><th>رقم الطلب</th><th>العميل</th><th>الحالة</th><th>حالة الدفع</th><th>الإجمالي</th><th>المدينة</th><th>التاريخ</th></tr>
+                    ${rows}
+                  </table>
+                  <script>setTimeout(()=>window.print(),600);<\/script></body></html>`);
+                pw.document.close();
+                toast.success('جارٍ فتح نافذة الطباعة — اختر "حفظ كـ PDF"');
+              }}
+              className="btn-secondary flex items-center gap-1.5 text-sm"
+            >
+              <Download size={14} /> PDF
             </button>
           </div>
         </div>
@@ -585,37 +669,51 @@ export default function Orders() {
           </div>
 
           {showFilters && (
-            <div className="flex flex-col md:flex-row gap-3 mt-3 pt-3 border-t border-gray-100">
-              <div className="flex-1">
-                <label className="block text-xs font-semibold text-gray-600 mb-1">من تاريخ</label>
-                <input
-                  type="date"
-                  value={dateFrom}
-                  onChange={(e) => setDateFrom(e.target.value)}
-                  className="input-field"
-                />
+            <div className="mt-3 pt-3 border-t border-gray-100 space-y-3">
+              {/* Quick period buttons */}
+              <div className="flex flex-wrap gap-2">
+                {(['اليوم', 'أمس', 'هذا الأسبوع', 'هذا الشهر'] as const).map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => applyPeriod(p)}
+                    className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-gray-100 text-gray-700 hover:bg-blue-50 hover:text-blue-700 transition-colors"
+                  >
+                    {p}
+                  </button>
+                ))}
+                <button
+                  onClick={() => setShowDayPicker((v) => !v)}
+                  className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-gray-100 text-gray-700 hover:bg-blue-50 hover:text-blue-700 transition-colors flex items-center gap-1"
+                >
+                  <Calendar size={11} /> يوم محدد
+                </button>
+                {showDayPicker && (
+                  <input
+                    type="date"
+                    value={specificDay}
+                    onChange={(e) => { setSpecificDay(e.target.value); applyPeriod('يوم محدد', e.target.value); }}
+                    className="input-field text-xs py-1 h-auto w-36"
+                  />
+                )}
               </div>
 
-              <div className="flex-1">
-                <label className="block text-xs font-semibold text-gray-600 mb-1">إلى تاريخ</label>
-                <input
-                  type="date"
-                  value={dateTo}
-                  onChange={(e) => setDateTo(e.target.value)}
-                  className="input-field"
-                />
+              {/* Date range inputs */}
+              <div className="flex flex-col md:flex-row gap-3">
+                <div className="flex-1">
+                  <label className="block text-xs font-semibold text-gray-600 mb-1">من تاريخ</label>
+                  <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="input-field" />
+                </div>
+                <div className="flex-1">
+                  <label className="block text-xs font-semibold text-gray-600 mb-1">إلى تاريخ</label>
+                  <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="input-field" />
+                </div>
+                <button
+                  onClick={() => { setDateFrom(''); setDateTo(''); setSpecificDay(''); setShowDayPicker(false); }}
+                  className="btn-secondary text-sm self-end flex-shrink-0 flex items-center gap-1.5"
+                >
+                  <X size={13} /> إعادة تعيين
+                </button>
               </div>
-
-              <button
-                onClick={() => {
-                  setDateFrom('');
-                  setDateTo('');
-                }}
-                className="btn-secondary text-sm self-end flex-shrink-0 flex items-center gap-1.5"
-              >
-                <X size={13} />
-                إعادة تعيين
-              </button>
             </div>
           )}
         </div>

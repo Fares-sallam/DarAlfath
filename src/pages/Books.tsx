@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react';
+import * as XLSX from 'xlsx';
 import Layout from '@/components/layout/Layout';
 import {
   Search, Plus, Edit, Trash2, BookOpen, Copy, ToggleLeft,
@@ -174,6 +175,65 @@ function exportCsv(products: Product[], currencySymbol: string) {
   a.download = `books-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function exportExcel(products: Product[], currencySymbol: string) {
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([
+    ['العنوان', 'المؤلف', 'النوع', 'التصنيف', `سعر التكلفة (${currencySymbol})`, `سعر البيع (${currencySymbol})`, 'الحالة', 'ISBN', 'تاريخ الإضافة'],
+    ...products.map((p) => [
+      p.title,
+      p.author,
+      p.type,
+      p.categories?.name ?? '',
+      p.cost_price,
+      p.sale_price ?? p.base_price,
+      p.is_active ? 'نشط' : 'مخفي',
+      p.isbn ?? '',
+      new Date(p.created_at).toLocaleDateString('ar-EG'),
+    ]),
+  ]);
+  ws['!cols'] = [{ wch: 35 }, { wch: 20 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 10 }, { wch: 14 }, { wch: 14 }];
+  XLSX.utils.book_append_sheet(wb, ws, 'الكتب');
+  XLSX.writeFile(wb, `كتب-دار-الفتح-${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+
+function exportPdf(products: Product[], currencySymbol: string, countryName?: string) {
+  const pw = window.open('', '_blank', 'width=900,height=700');
+  if (!pw) return;
+  const rows = products.map((p) => `
+    <tr>
+      <td>${p.title}</td>
+      <td>${p.author}</td>
+      <td>${p.type}</td>
+      <td>${p.categories?.name ?? '—'}</td>
+      <td>${(p.sale_price ?? p.base_price).toLocaleString()} ${currencySymbol}</td>
+      <td class="${p.is_active ? 'active' : 'inactive'}">${p.is_active ? 'نشط' : 'مخفي'}</td>
+    </tr>`).join('');
+  pw.document.write(`<!DOCTYPE html><html dir="rtl" lang="ar"><head><meta charset="UTF-8"/>
+    <title>كتالوج الكتب</title>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;900&display=swap');
+      *{margin:0;padding:0;box-sizing:border-box}
+      body{font-family:'Cairo',Arial,sans-serif;direction:rtl;padding:24px;font-size:12px;color:#1e293b}
+      h1{font-size:18px;font-weight:900;color:#1d4ed8;margin-bottom:4px}
+      .meta{color:#64748b;font-size:11px;margin-bottom:16px}
+      table{width:100%;border-collapse:collapse}
+      th{background:#1d4ed8;color:#fff;padding:8px;text-align:right;font-size:11px}
+      td{padding:7px 8px;border-bottom:1px solid #f1f5f9;font-size:11px}
+      tr:nth-child(even) td{background:#f8fafc}
+      .active{color:#16a34a;font-weight:700}
+      .inactive{color:#dc2626}
+      @media print{body{padding:12px}}
+    </style></head><body>
+    <h1>كتالوج الكتب — دار الفتح</h1>
+    <p class="meta">إجمالي الكتب: ${products.length} · ${countryName ?? 'كل الدول'} · ${new Date().toLocaleDateString('ar-EG')}</p>
+    <table>
+      <tr><th>العنوان</th><th>المؤلف</th><th>النوع</th><th>التصنيف</th><th>سعر البيع</th><th>الحالة</th></tr>
+      ${rows}
+    </table>
+    <script>setTimeout(()=>window.print(),600);<\/script></body></html>`);
+  pw.document.close();
 }
 
 function ImageGallery({
@@ -608,12 +668,20 @@ export default function Books() {
               )}
             </button>
 
+            <button onClick={() => exportCsv(filtered, currencySymbol)} className="btn-secondary flex items-center gap-2 text-sm">
+              <Download size={14} /> CSV
+            </button>
             <button
-              onClick={() => exportCsv(filtered, currencySymbol)}
+              onClick={() => { exportExcel(filtered, currencySymbol); toast.success('تم تصدير Excel'); }}
               className="btn-secondary flex items-center gap-2 text-sm"
             >
-              <Download size={14} />
-              تصدير CSV
+              <Download size={14} /> Excel
+            </button>
+            <button
+              onClick={() => { exportPdf(filtered, currencySymbol, selectedCountry?.name); toast.success('جارٍ فتح نافذة الطباعة — اختر "حفظ كـ PDF"'); }}
+              className="btn-secondary flex items-center gap-2 text-sm"
+            >
+              <Download size={14} /> PDF
             </button>
 
             <button onClick={openAdd} className="btn-primary flex items-center gap-2">
