@@ -115,25 +115,17 @@ export function useCustomers() {
         }
       }
 
-      // ── 5. تصفية حسب الدولة المختارة ──────────────────────────
-      let visibleProfiles = profileRows;
-
-      if (selectedCountry?.id) {
-        visibleProfiles = profileRows.filter((p) =>
-          p.country_id === selectedCountry.id || !!orderMap[p.id]
-        );
-      }
-
-      // إذا لا توجد نتائج بعد التصفية، أرجع الكل (بدون تصفية دولة)
-      if (visibleProfiles.length === 0 && profileRows.length > 0) {
-        visibleProfiles = profileRows;
-      }
+      // ── 5. عرض كل العملاء دائماً ────────────────────────────────
+      // الدولة تُستخدم فقط لتصفية إحصاءات الطلبات (totalOrders/totalSpent)
+      // وليس لإخفاء العملاء أنفسهم
+      const visibleProfiles = profileRows;
 
       // ── 6. بناء النتيجة النهائية ───────────────────────────────
       return visibleProfiles.map((p) => {
-        const countryData = selectedCountry
-          ? { name: selectedCountry.name, currency_symbol: selectedCountry.currency_symbol }
-          : p.country_id ? (countriesMap.get(p.country_id) ?? null) : null;
+        // عرض بيانات الدولة الخاصة بالعميل (وليس الدولة المختارة)
+        const countryData = p.country_id
+          ? (countriesMap.get(p.country_id) ?? null)
+          : null;
 
         return {
           ...p,
