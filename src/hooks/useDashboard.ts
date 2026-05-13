@@ -265,36 +265,71 @@ export function useTopSellingBooks(limit = 5) {
 
 export interface AuditEntry {
   id: string;
+  user_id?: string | null;
+  user_email?: string | null;
   action: string;
   table_name?: string;
   record_id?: string;
   old_data?: Record<string, unknown>;
   new_data?: Record<string, unknown>;
   created_at: string;
-  profiles?: { full_name?: string; avatar_url?: string };
+  profiles?: { full_name?: string; avatar_url?: string } | null;
 }
 
 export function useRecentAuditLogs(limit = 10) {
   return useQuery({
     queryKey: ['dashboard', 'audit-logs', limit],
     queryFn: async (): Promise<AuditEntry[]> => {
+
+      // ── محاولة مع FK hint ────────────────────────────────────
       const { data, error } = await supabase
         .from('audit_logs')
         .select(`
           id,
+          user_id,
+          user_email,
           action,
           table_name,
           record_id,
           old_data,
           new_data,
           created_at,
-          profiles(full_name, avatar_url)
+          profiles!fk_audit_logs_profiles(full_name, avatar_url)
         `)
         .order('created_at', { ascending: false })
         .limit(limit);
 
-      if (error) throw error;
-      return (data ?? []) as AuditEntry[];
+      if (!error) return (data ?? []) as AuditEntry[];
+
+      // ── الـ JOIN فشل — نجلب بدونه ثم نجلب profiles منفصلاً ──
+      console.warn('[Dashboard] audit join failed:', error.message);
+
+      const { data: raw, error: rawErr } = await supabase
+        .from('audit_logs')
+        .select('id, user_id, user_email, action, table_name, record_id, old_data, new_data, created_at')
+        .order('created_at', { ascending: false })
+        .limit(limit);
+
+      if (rawErr) throw new Error(rawErr.message);
+
+      const logs = (raw ?? []) as AuditEntry[];
+      const userIds = [...new Set(logs.map((l) => l.user_id).filter(Boolean))] as string[];
+
+      if (userIds.length === 0) return logs;
+
+      const { data: profilesData } = await supabase
+        .from('profiles')
+        .select('id, full_name, avatar_url')
+        .in('id', userIds);
+
+      const profilesMap = new Map(
+        (profilesData ?? []).map((p) => [p.id, { full_name: p.full_name, avatar_url: p.avatar_url }])
+      );
+
+      return logs.map((log) => ({
+        ...log,
+        profiles: log.user_id ? (profilesMap.get(log.user_id) ?? null) : null,
+      }));
     },
   });
 }

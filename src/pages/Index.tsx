@@ -453,7 +453,7 @@ function ActivityPanel() {
               };
 
             const tableName = tableArabic[log.table_name ?? ''] ?? log.table_name ?? 'النظام';
-            const userName = log.profiles?.full_name ?? 'النظام';
+            const userName = log.profiles?.full_name ?? log.user_email ?? 'النظام';
 
             return (
               <div
