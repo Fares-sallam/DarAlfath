@@ -8,6 +8,7 @@ export type Period =
   | 'هذا الأسبوع'
   | 'هذا الشهر'
   | 'هذا العام'
+  | 'يوم محدد'
   | 'مخصص';
 
 type SelectedCountryLite = {
@@ -114,6 +115,11 @@ export function getPeriodRange(
       const from = startOfYear(now);
       const to = endOfYear(now);
       return [from.toISOString(), to.toISOString()];
+    }
+
+    case 'يوم محدد': {
+      const d = customFrom ? new Date(`${customFrom}T00:00:00`) : now;
+      return [startOfDay(d).toISOString(), endOfDay(d).toISOString()];
     }
 
     case 'مخصص': {
