@@ -352,18 +352,13 @@ export function useKpiSummary(from: string, to: string) {
       const countryName = selectedCountry?.name ?? null;
 
       if (realOrders.length === 0) {
-        const prods = await fetchScopedProductFallback(selectedCountry?.id);
-        const rev = prods.reduce((s, p) => s + (p.sale_price ?? p.base_price), 0);
-        const cost = prods.reduce((s, p) => s + p.cost_price, 0);
-        const profit = rev - cost;
-
         return {
-          totalRevenue: rev,
-          totalProfit: profit,
+          totalRevenue: 0,
+          totalProfit: 0,
           totalOrders: 0,
-          avgOrderValue: prods.length > 0 ? rev / prods.length : 0,
-          profitMargin: rev > 0 ? (profit / rev) * 100 : 0,
-          isFallback: true,
+          avgOrderValue: 0,
+          profitMargin: 0,
+          isFallback: false,
           currencyCode,
           currencySymbol,
           countryName,
@@ -461,15 +456,7 @@ export function useRevenueTrend(from: string, to: string, period: Period) {
       const currencySymbol = selectedCountry?.currency_symbol ?? 'ج.م';
 
       if (realOrders.length === 0) {
-        const prods = await fetchScopedProductFallback(selectedCountry?.id);
-        return prods.slice(0, 8).map((p) => ({
-          label: p.title.length > 12 ? p.title.slice(0, 12) + '…' : p.title,
-          revenue: p.sale_price ?? p.base_price,
-          profit: (p.sale_price ?? p.base_price) - p.cost_price,
-          orders: 0,
-          currencyCode,
-          currencySymbol,
-        }));
+        return buildTimeline(period, from, to, {}, currencyCode, currencySymbol);
       }
 
       const grouped: Record<

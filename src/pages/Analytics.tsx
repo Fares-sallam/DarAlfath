@@ -31,9 +31,7 @@ import {
   AlertCircle,
   BookOpen,
   RefreshCw,
-  Info,
   ArrowLeft,
-  ShoppingBag,
   Users,
   Globe2,
 } from 'lucide-react';
@@ -77,7 +75,6 @@ function StatCard({
   color,
   trend,
   loading,
-  isFallback,
 }: {
   label: string;
   value: string;
@@ -86,17 +83,9 @@ function StatCard({
   color: string;
   trend?: 'up' | 'down';
   loading?: boolean;
-  isFallback?: boolean;
 }) {
   return (
-    <div className={`bg-white rounded-2xl p-5 shadow-sm card-hover relative ${isFallback ? 'ring-2 ring-amber-200' : ''}`}>
-      {isFallback && (
-        <span
-          className="absolute top-2 left-2 w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse"
-          title="بيانات تقديرية"
-        />
-      )}
-
+    <div className="bg-white rounded-2xl p-5 shadow-sm card-hover relative">
       <div className="flex items-center justify-between mb-3">
         <div className={`w-11 h-11 rounded-xl flex items-center justify-center ${color}`}>
           {icon}
@@ -121,7 +110,7 @@ function StatCard({
       )}
 
       <p className="text-sm text-gray-500 mt-0.5">{label}</p>
-      {sub && <p className="text-xs text-amber-600 font-semibold mt-1">{sub}</p>}
+      {sub && <p className="text-xs text-gray-500 mt-1">{sub}</p>}
     </div>
   );
 }
@@ -197,31 +186,6 @@ function EmptyChart({
 }
 
 /* ── Fallback banner ── */
-function FallbackBanner({ onAddOrder }: { onAddOrder: () => void }) {
-  return (
-    <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-6 flex items-start gap-3">
-      <div className="w-9 h-9 bg-amber-100 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5">
-        <Info size={18} className="text-amber-600" />
-      </div>
-
-      <div className="flex-1 min-w-0">
-        <p className="font-bold text-amber-800 text-sm">لا توجد طلبات مسجّلة في هذه الفترة</p>
-        <p className="text-xs text-amber-700 mt-0.5 leading-relaxed">
-          يتم عرض <span className="font-semibold">بيانات تقديرية</span> مبنية على أسعار كتالوج المنتجات الحالي.
-          المؤشرات المحاطة بإطار ذهبي تُمثّل قيماً تقديرية وليست مبيعات فعلية.
-        </p>
-      </div>
-
-      <button
-        onClick={onAddOrder}
-        className="flex-shrink-0 text-xs font-semibold px-3 py-1.5 bg-amber-600 text-white rounded-xl hover:bg-amber-700 transition-colors flex items-center gap-1.5"
-      >
-        <ShoppingBag size={12} /> إضافة طلب
-      </button>
-    </div>
-  );
-}
-
 /* ── No-orders empty state for full sections ── */
 function NoOrdersSection({
   title,
@@ -315,10 +279,7 @@ export default function Analytics() {
   };
 
   const trendChartData = useMemo(() => trend.map((d) => ({ ...d, name: d.label })), [trend]);
-  const isFallback = kpi?.isFallback ?? false;
-  const hasFallbackData = isFallback || (trend.length > 0 && trend.every((d) => d.orders === 0));
-
-  return (
+return (
     <Layout>
       <div className="fade-in">
         {/* ── Header ── */}
@@ -400,34 +361,22 @@ export default function Analytics() {
           )}
         </div>
 
-        {/* ── Fallback Banner ── */}
-        {!kpiLoading && hasFallbackData && <FallbackBanner onAddOrder={() => navigate('/orders')} />}
-
         {/* ── KPI Cards ── */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
           <StatCard
-            label={isFallback ? 'قيمة الكتالوج' : 'إجمالي الإيرادات'}
+            label="إجمالي الإيرادات"
             value={kpi ? formatCompactMoney(kpi.totalRevenue, activeCurrencySymbol) : '—'}
-            sub={
-              isFallback
-                ? '⚡ تقديري من الكتالوج'
-                : kpi?.countryName
-                ? `الدولة: ${kpi.countryName}`
-                : undefined
-            }
+            sub={kpi?.countryName ? `الدولة: ${kpi.countryName}` : undefined}
             loading={kpiLoading}
-            isFallback={isFallback}
             icon={<DollarSign size={20} className="text-blue-700" />}
             color="bg-blue-50"
             trend="up"
           />
 
           <StatCard
-            label={isFallback ? 'ربح تقديري' : 'صافي الربح'}
+            label="صافي الربح"
             value={kpi ? formatCompactMoney(kpi.totalProfit, activeCurrencySymbol) : '—'}
-            sub={isFallback ? '⚡ تقديري' : undefined}
             loading={kpiLoading}
-            isFallback={isFallback}
             icon={<TrendingUp size={20} className="text-green-600" />}
             color="bg-green-50"
             trend={kpi && kpi.totalProfit >= 0 ? 'up' : 'down'}
@@ -436,9 +385,7 @@ export default function Analytics() {
           <StatCard
             label="هامش الربح"
             value={kpi ? `${kpi.profitMargin.toFixed(1)}٪` : '—'}
-            sub={isFallback ? '⚡ تقديري' : undefined}
             loading={kpiLoading}
-            isFallback={isFallback}
             icon={<BarChart2 size={20} className="text-amber-600" />}
             color="bg-amber-50"
           />
@@ -465,11 +412,6 @@ export default function Analytics() {
           <div className="flex items-center justify-between mb-4">
             <div>
               <h3 className="font-bold text-gray-800">الإيرادات والأرباح</h3>
-              {hasFallbackData && (
-                <p className="text-xs text-amber-600 mt-0.5 bg-amber-50 px-3 py-1 rounded-xl inline-block">
-                  ⚠️ عرض أسعار المنتجات — لا توجد طلبات في هذه الفترة
-                </p>
-              )}
             </div>
 
             <span className="text-xs text-gray-400 bg-gray-100 px-3 py-1 rounded-xl">
