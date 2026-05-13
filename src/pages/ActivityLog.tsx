@@ -69,7 +69,7 @@ function useAuditLogs(filters: LogFilters) {
     queryKey: ['audit-logs', filters],
     queryFn: async (): Promise<AuditLog[]> => {
 
-      // ── محاولة 1: جلب السجلات مع join لجدول profiles ──────────
+      // ── جلب السجلات ────────────────────────────────────────────
       let query = supabase
         .from('audit_logs')
         .select(`
@@ -82,14 +82,14 @@ function useAuditLogs(filters: LogFilters) {
           new_data,
           ip_address,
           created_at,
-          profiles!user_id(full_name, avatar_url, role)
+          profiles!fk_audit_logs_profiles(full_name, avatar_url, role)
         `)
         .order('created_at', { ascending: false })
         .limit(500);
 
-      if (filters.action && filters.action !== 'الكل')   query = query.eq('action', filters.action);
+      if (filters.action    && filters.action    !== 'الكل') query = query.eq('action',     filters.action);
       if (filters.tableName && filters.tableName !== 'الكل') query = query.eq('table_name', filters.tableName);
-      if (filters.userId   && filters.userId   !== 'الكل') query = query.eq('user_id',    filters.userId);
+      if (filters.userId    && filters.userId    !== 'الكل') query = query.eq('user_id',    filters.userId);
       if (filters.dateFrom) query = query.gte('created_at', new Date(filters.dateFrom).toISOString());
       if (filters.dateTo) {
         const to = new Date(filters.dateTo);
@@ -99,10 +99,11 @@ function useAuditLogs(filters: LogFilters) {
 
       const { data, error } = await query;
 
+      // ── نجح الـ JOIN — أعد البيانات مباشرة ─────────────────────
       if (!error) return (data ?? []) as AuditLog[];
 
-      // ── محاولة 2: بدون join (إذا فشل الـ FK hint) ──────────────
-      console.warn('[ActivityLog] join failed → retrying without profiles:', error.message, error.code);
+      // ── فشل الـ JOIN — نجلب السجلات بدونه ثم نجلب profiles منفصلاً
+      console.warn('[ActivityLog] join failed, fetching separately:', error.message);
 
       let fallback = supabase
         .from('audit_logs')
@@ -110,7 +111,7 @@ function useAuditLogs(filters: LogFilters) {
         .order('created_at', { ascending: false })
         .limit(500);
 
-      if (filters.action   && filters.action   !== 'الكل') fallback = fallback.eq('action',     filters.action);
+      if (filters.action    && filters.action    !== 'الكل') fallback = fallback.eq('action',     filters.action);
       if (filters.tableName && filters.tableName !== 'الكل') fallback = fallback.eq('table_name', filters.tableName);
       if (filters.dateFrom) fallback = fallback.gte('created_at', new Date(filters.dateFrom).toISOString());
       if (filters.dateTo) {
@@ -120,13 +121,31 @@ function useAuditLogs(filters: LogFilters) {
       }
 
       const { data: fbData, error: fbError } = await fallback;
-
       if (fbError) {
-        console.error('[ActivityLog] fallback also failed:', fbError.message, fbError.code, fbError.details);
+        console.error('[ActivityLog] fallback failed:', fbError.message, fbError.code);
         throw new Error(`${fbError.message} (${fbError.code ?? 'unknown'})`);
       }
 
-      return (fbData ?? []) as AuditLog[];
+      const logs = (fbData ?? []) as AuditLog[];
+
+      // ── جلب بيانات profiles للـ user_ids الفريدة ────────────────
+      const userIds = [...new Set(logs.map((l) => l.user_id).filter(Boolean))] as string[];
+
+      if (userIds.length === 0) return logs;
+
+      const { data: profilesData } = await supabase
+        .from('profiles')
+        .select('id, full_name, avatar_url, role')
+        .in('id', userIds);
+
+      const profilesMap = new Map(
+        (profilesData ?? []).map((p) => [p.id, { full_name: p.full_name, avatar_url: p.avatar_url, role: p.role }])
+      );
+
+      return logs.map((log) => ({
+        ...log,
+        profiles: log.user_id ? (profilesMap.get(log.user_id) ?? null) : null,
+      }));
     },
   });
 }
