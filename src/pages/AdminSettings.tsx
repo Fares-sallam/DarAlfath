@@ -22,6 +22,9 @@ import {
   Globe2,
   Crown,
   Lock,
+  Settings,
+  Camera,
+  Upload,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useQueryClient } from '@tanstack/react-query';
@@ -30,6 +33,7 @@ import {
   useAdminProfiles,
   useAdminCountries,
   useUpdateAdminPermissions,
+  useUpdateAdminProfile,
   useUpdateProfileRole,
   useToggleAdminStatus,
   useCreateAdminSetting,
@@ -48,6 +52,7 @@ import {
   type CountryOption,
 } from '@/hooks/useAdminSettings';
 import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/lib/supabase';
 
 /* ── Role badge ── */
 function RoleBadge({ role, isOwner = false }: { role: string; isOwner?: boolean }) {
@@ -1122,6 +1127,242 @@ function CreateNewAdminModal({ onClose }: CreateNewAdminModalProps) {
 }
 
 /* ════════════════════════════════════════════════════════════
+   Admin Profile Edit Modal
+════════════════════════════════════════════════════════════ */
+interface AdminProfileEditModalProps {
+  admin: AdminSetting;
+  onClose: () => void;
+}
+
+function AdminProfileEditModal({ admin, onClose }: AdminProfileEditModalProps) {
+  const name    = admin.profiles?.full_name ?? 'مشرف';
+  const email   = admin.profiles?.email ?? null;
+  const isOwner = isSystemOwner(email);
+
+  const updateProfile = useUpdateAdminProfile();
+
+  const [form, setForm] = useState({
+    full_name: admin.profiles?.full_name ?? '',
+    phone:     admin.profiles?.phone     ?? '',
+  });
+
+  const [avatarFile,    setAvatarFile]    = useState<File | null>(null);
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+  const [uploading,     setUploading]     = useState(false);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { toast.error('يجب اختيار ملف صورة'); return; }
+    if (file.size > 3 * 1024 * 1024)    { toast.error('حجم الصورة يجب أن يكون أقل من 3 ميجابايت'); return; }
+    setAvatarFile(file);
+    const reader = new FileReader();
+    reader.onload = () => setAvatarPreview(reader.result as string);
+    reader.readAsDataURL(file);
+  };
+
+  const handleRemoveAvatar = async () => {
+    if (!confirm('هل تريد حذف صورة المشرف؟')) return;
+    setAvatarFile(null);
+    setAvatarPreview(null);
+    await updateProfile.mutateAsync({
+      userId:     admin.user_id,
+      full_name:  form.full_name.trim() || name,
+      phone:      form.phone.trim() || null,
+      avatar_url: null,
+    });
+  };
+
+  const handleSave = async () => {
+    if (!form.full_name.trim()) { toast.error('الاسم مطلوب'); return; }
+    setUploading(true);
+    try {
+      let newAvatarUrl: string | undefined = undefined;
+
+      if (avatarFile) {
+        const ext  = avatarFile.name.split('.').pop() ?? 'jpg';
+        const path = `admins/${admin.user_id}.${ext}`;
+
+        const { error: upErr } = await supabase.storage
+          .from('avatars')
+          .upload(path, avatarFile, { upsert: true, contentType: avatarFile.type });
+
+        if (upErr) { toast.error('فشل رفع الصورة: ' + upErr.message); return; }
+
+        const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(path);
+        newAvatarUrl = urlData.publicUrl + `?v=${Date.now()}`;
+      }
+
+      await updateProfile.mutateAsync({
+        userId:     admin.user_id,
+        full_name:  form.full_name.trim(),
+        phone:      form.phone.trim() || null,
+        avatar_url: newAvatarUrl,
+      });
+
+      onClose();
+    } catch {
+      /* onError في الـ mutation يعرض الـ toast */
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const busy           = uploading || updateProfile.isPending;
+  const currentAvatar  = avatarPreview ?? admin.profiles?.avatar_url ?? null;
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 overflow-y-auto"
+      dir="rtl"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md my-4 overflow-hidden">
+
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-5 border-b border-gray-100 bg-gradient-to-l from-[#0B1F4D]/5 to-indigo-50/30">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-[#0B1F4D] rounded-xl flex items-center justify-center shadow-sm">
+              <Settings size={17} className="text-[#D4AF37]" />
+            </div>
+            <div>
+              <h2 className="font-bold text-gray-800">إعدادات المشرف</h2>
+              <p className="text-xs text-gray-400 mt-0.5">{name}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 text-gray-400 transition-colors">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-5">
+
+          {/* ─── Avatar ─── */}
+          <div className="flex flex-col items-center gap-3">
+            <div className="relative">
+              {currentAvatar ? (
+                <img
+                  src={currentAvatar}
+                  alt={name}
+                  className="w-24 h-24 rounded-2xl object-cover border-4 border-white shadow-lg"
+                />
+              ) : (
+                <div className="w-24 h-24 rounded-2xl bg-gradient-to-br from-blue-100 to-indigo-200 border-4 border-white shadow-lg flex items-center justify-center">
+                  <span className="text-[#0B1F4D] font-black text-3xl">{name.charAt(0)}</span>
+                </div>
+              )}
+
+              {/* Camera button */}
+              <label
+                className="absolute -bottom-2 -left-2 w-8 h-8 bg-[#0B1F4D] rounded-xl flex items-center justify-center cursor-pointer shadow-md hover:bg-[#162d6e] transition-colors"
+                title="تغيير الصورة"
+              >
+                <Camera size={14} className="text-[#D4AF37]" />
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  className="hidden"
+                  onChange={handleFileChange}
+                />
+              </label>
+            </div>
+
+            <div className="text-center">
+              <p className="font-bold text-gray-800 text-sm">{name}</p>
+              <p className="text-xs text-gray-400" dir="ltr">{email ?? '—'}</p>
+            </div>
+
+            {/* Remove avatar */}
+            {(currentAvatar || avatarFile) && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (avatarFile) { setAvatarFile(null); setAvatarPreview(null); }
+                  else handleRemoveAvatar();
+                }}
+                disabled={busy}
+                className="text-xs text-red-500 hover:text-red-700 font-semibold flex items-center gap-1 disabled:opacity-50"
+              >
+                <X size={11} />
+                {avatarFile ? 'إلغاء اختيار الصورة' : 'حذف الصورة الحالية'}
+              </button>
+            )}
+          </div>
+
+          {/* Upload hint */}
+          {avatarFile && (
+            <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 flex items-center gap-2 text-xs text-blue-700 font-semibold">
+              <Upload size={13} />
+              <span>تم الاختيار: <span className="font-mono">{avatarFile.name}</span> — سيتم الرفع عند الحفظ</span>
+            </div>
+          )}
+
+          {/* ─── Form ─── */}
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                الاسم الكامل <span className="text-red-500">*</span>
+              </label>
+              <input
+                value={form.full_name}
+                onChange={(e) => setForm((f) => ({ ...f, full_name: e.target.value }))}
+                className="input-field"
+                placeholder="اسم المشرف الكامل"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">رقم الهاتف</label>
+              <input
+                value={form.phone}
+                onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))}
+                className="input-field"
+                placeholder="اختياري"
+                dir="ltr"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">البريد الإلكتروني</label>
+              <input
+                value={email ?? '—'}
+                disabled
+                className="input-field bg-gray-50 text-gray-400 cursor-not-allowed select-none"
+                dir="ltr"
+              />
+              <p className="text-xs text-gray-400 mt-1.5">البريد الإلكتروني لا يمكن تغييره من هنا</p>
+            </div>
+          </div>
+
+          {/* Owner notice */}
+          {isOwner && (
+            <div className="bg-[#0B1F4D]/5 border border-[#0B1F4D]/10 rounded-2xl p-3 flex items-center gap-2 text-xs text-[#0B1F4D] font-semibold">
+              <Lock size={12} />
+              هذا حساب مالك النظام — يمكن تعديل الاسم والصورة فقط
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between px-6 pb-6 pt-2 border-t border-gray-100">
+          <button type="button" onClick={onClose} disabled={busy} className="btn-secondary">
+            إلغاء
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={busy || !form.full_name.trim()}
+            className="btn-primary flex items-center gap-2 disabled:opacity-50"
+          >
+            {busy ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+            {uploading ? 'جارٍ الرفع...' : 'حفظ التغييرات'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════
    Admin Card
 ════════════════════════════════════════════════════════════ */
 interface AdminCardProps {
@@ -1134,7 +1375,8 @@ function AdminCard({ admin, isSelected, onSelect }: AdminCardProps) {
   const updateRole = useUpdateProfileRole();
   const deleteSetting = useDeleteAdminSetting();
 
-  const [showRoleMenu, setShowRoleMenu] = useState(false);
+  const [showRoleMenu,     setShowRoleMenu]     = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
 
   const name = admin.profiles?.full_name ?? 'مشرف';
   const role = admin.profiles?.role ?? '';
@@ -1287,6 +1529,16 @@ function AdminCard({ admin, isSelected, onSelect }: AdminCardProps) {
 
         {/* Actions */}
         <div className="flex flex-col items-end gap-1.5 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
+          {/* Settings */}
+          <button
+            onClick={() => setShowSettingsModal(true)}
+            className="p-1.5 rounded-lg hover:bg-indigo-50 text-indigo-400 hover:text-indigo-600 transition-colors"
+            title="إعدادات الملف الشخصي"
+          >
+            <Settings size={13} />
+          </button>
+
+          {/* Toggle status */}
           <button
             onClick={() =>
               toggleStatus.mutate({
@@ -1308,10 +1560,10 @@ function AdminCard({ admin, isSelected, onSelect }: AdminCardProps) {
             <Power size={13} />
           </button>
 
+          {/* Delete */}
           <button
             onClick={() => {
               if (isOwnerAccount) return;
-
               if (confirm(`هل تريد حذف صلاحيات ${name}؟`)) {
                 deleteSetting.mutate({
                   settingId: admin.id,
@@ -1343,6 +1595,14 @@ function AdminCard({ admin, isSelected, onSelect }: AdminCardProps) {
         <div className="mt-2 pt-2 border-t border-blue-100 flex items-center gap-1 text-xs text-blue-600 font-semibold">
           <Shield size={11} /> جارٍ تعديل الصلاحيات
         </div>
+      )}
+
+      {/* Profile edit modal */}
+      {showSettingsModal && (
+        <AdminProfileEditModal
+          admin={admin}
+          onClose={() => setShowSettingsModal(false)}
+        />
       )}
     </div>
   );

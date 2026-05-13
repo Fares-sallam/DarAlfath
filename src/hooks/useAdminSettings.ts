@@ -393,6 +393,42 @@ export function useDeleteAdminSetting() {
   });
 }
 
+/* ── Update admin profile info (name, phone, avatar) ── */
+export function useUpdateAdminProfile() {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      userId,
+      full_name,
+      phone,
+      avatar_url,
+    }: {
+      userId: string;
+      full_name: string;
+      phone?: string | null;
+      avatar_url?: string | null;
+    }) => {
+      const updates: Record<string, unknown> = { full_name };
+      if (phone !== undefined) updates.phone = phone;
+      if (avatar_url !== undefined) updates.avatar_url = avatar_url;
+
+      const { error } = await supabase
+        .from('profiles')
+        .update(updates)
+        .eq('id', userId);
+
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin-settings'] });
+      qc.invalidateQueries({ queryKey: ['admin-profiles'] });
+      toast.success('تم تحديث بيانات المشرف بنجاح');
+    },
+    onError: (e: Error) => toast.error('فشل التحديث: ' + e.message),
+  });
+}
+
 /* ── Role helpers ── */
 export const ROLE_OPTIONS = [
   { value: 'super_admin', label: 'مدير النظام', color: 'bg-[#0B1F4D] text-white' },
