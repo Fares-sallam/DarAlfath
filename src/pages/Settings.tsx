@@ -21,17 +21,22 @@ import {
   type Country, type PaymentMethod, type Category, type StoreSettingsInput,
 } from '@/hooks/useSettings';
 
-/* ── Sidebar sections — removed language/currency/theme ── */
-const SECTIONS = [
-  { id: 'profile',    label: 'الملف الشخصي',     icon: User },
-  { id: 'security',   label: 'كلمة المرور والأمان', icon: Shield },
-  { id: 'store',      label: 'إعدادات المتجر',    icon: Store },
-  { id: 'countries',  label: 'الدول النشطة',       icon: Globe2 },
-  { id: 'payment',    label: 'طرق الدفع',          icon: Wallet },
-  { id: 'categories', label: 'تصنيفات الكتب',      icon: Tag },
-  { id: 'seo',        label: 'إعدادات SEO',        icon: SearchIcon },
+/* ── Sidebar sections — personal vs shared ── */
+const PERSONAL_SECTIONS = [
+  { id: 'profile',  label: 'الملف الشخصي',       icon: User },
+  { id: 'security', label: 'كلمة المرور والأمان', icon: Shield },
+];
+
+const STORE_SECTIONS = [
+  { id: 'store',         label: 'إعدادات المتجر', icon: Store },
+  { id: 'countries',     label: 'الدول النشطة',    icon: Globe2 },
+  { id: 'payment',       label: 'طرق الدفع',       icon: Wallet },
+  { id: 'categories',    label: 'تصنيفات الكتب',   icon: Tag },
+  { id: 'seo',           label: 'إعدادات SEO',     icon: SearchIcon },
   { id: 'notifications', label: 'الإشعارات',       icon: Bell },
 ];
+
+const SECTIONS = [...PERSONAL_SECTIONS, ...STORE_SECTIONS];
 
 /* ── Password strength ── */
 function passwordStrength(pw: string): { score: number; label: string; color: string } {
@@ -166,12 +171,12 @@ function ProfileSection() {
     if (file.size > 2 * 1024 * 1024) { toast.error('حجم الصورة يجب أن يكون أقل من 2MB'); return; }
 
     setUploadingAvatar(true);
-    const ext = file.name.split('.').pop();
-    const path = `avatars/${user.id}.${ext}`;
+    const ext = file.name.split('.').pop() ?? 'jpg';
+    const path = `admins/${user.id}.${ext}`;
 
     const { error: uploadError } = await supabase.storage
-      .from('book-covers')
-      .upload(path, file, { upsert: true });
+      .from('avatars')
+      .upload(path, file, { upsert: true, contentType: file.type });
 
     if (uploadError) {
       toast.error('فشل رفع الصورة: ' + uploadError.message);
@@ -179,7 +184,7 @@ function ProfileSection() {
       return;
     }
 
-    const { data: { publicUrl } } = supabase.storage.from('book-covers').getPublicUrl(path);
+    const { data: { publicUrl } } = supabase.storage.from('avatars').getPublicUrl(path);
 
     const { error: updateError } = await supabase
       .from('profiles')
@@ -1310,6 +1315,7 @@ function CategoriesSection() {
    Main Settings Page
 ════════════════════════════════════════════════════════════ */
 export default function Settings() {
+  const { user } = useAuth();
   const location = useLocation();
   const [activeSection, setActiveSection] = useState(
     (location.state as { section?: string })?.section || 'profile'
@@ -1321,55 +1327,162 @@ export default function Settings() {
     if (sec) setActiveSection(sec);
   }, [location.state]);
 
+  const isPersonal = PERSONAL_SECTIONS.some(s => s.id === activeSection);
+
+  const roleLabels: Record<string, string> = {
+    super_admin: 'مدير النظام',
+    admin: 'مشرف',
+    manager: 'مدير',
+    sales: 'مبيعات',
+    support: 'دعم',
+    warehouse: 'مستودع',
+    user: 'مستخدم',
+  };
 
   return (
     <Layout>
-      <div className="fade-in">
+      <div className="fade-in" dir="rtl">
         <div className="mb-6">
           <h1 className="section-title">الإعدادات</h1>
-          <p className="section-subtitle">إدارة حسابك وإعدادات المتجر والبيانات</p>
+          <p className="section-subtitle">إعداداتك الشخصية وإعدادات المتجر والبيانات</p>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          {/* Settings Sidebar */}
-          <div className="bg-white rounded-2xl shadow-sm p-3 h-fit lg:sticky lg:top-6">
-            <ul className="space-y-0.5">
-              {SECTIONS.map(s => {
-                const Icon = s.icon;
-                const isActive = activeSection === s.id;
-                return (
-                  <li key={s.id}>
-                    <button
-                      onClick={() => setActiveSection(s.id)}
-                      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
-                        isActive
-                          ? 'bg-[#0B1F4D] text-white font-semibold shadow-sm'
-                          : 'text-gray-600 hover:bg-gray-50 hover:text-gray-800'
-                      }`}
-                    >
-                      <Icon size={16} className={isActive ? 'text-white' : 'text-gray-400'} />
-                      <span className="flex-1 text-right">{s.label}</span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
+
+          {/* ── Sidebar ── */}
+          <div className="lg:col-span-1 space-y-3">
+
+            {/* Personal identity card */}
+            <div
+              className="bg-white rounded-2xl shadow-sm p-4 border-2 border-[#0B1F4D]/10 cursor-pointer hover:border-[#0B1F4D]/30 transition-all"
+              onClick={() => setActiveSection('profile')}
+            >
+              <div className="flex items-center gap-3">
+                {user?.avatarUrl ? (
+                  <img
+                    src={user.avatarUrl}
+                    alt={user.fullName || ''}
+                    className="w-11 h-11 rounded-xl object-cover border-2 border-[#0B1F4D]/10 flex-shrink-0"
+                  />
+                ) : (
+                  <div className="w-11 h-11 rounded-xl bg-[#0B1F4D] flex items-center justify-center flex-shrink-0 border-2 border-[#0B1F4D]/20">
+                    <span className="text-[#D4AF37] font-black text-base">
+                      {(user?.fullName || user?.email || 'م')[0].toUpperCase()}
+                    </span>
+                  </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="font-bold text-gray-800 text-sm truncate">{user?.fullName || 'المستخدم'}</p>
+                  <p className="text-xs text-gray-400 truncate" dir="ltr">{user?.email}</p>
+                  <span className="inline-block text-[10px] font-bold mt-1 px-2 py-0.5 rounded-full bg-[#0B1F4D]/10 text-[#0B1F4D]">
+                    {roleLabels[user?.role ?? ''] ?? user?.role}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Navigation */}
+            <div className="bg-white rounded-2xl shadow-sm p-3">
+
+              {/* Personal group */}
+              <p className="text-[10px] font-black text-gray-400 uppercase tracking-wider px-3 pt-1 pb-2">
+                إعداداتي الشخصية
+              </p>
+              <ul className="space-y-0.5 mb-3">
+                {PERSONAL_SECTIONS.map(s => {
+                  const Icon = s.icon;
+                  const isActive = activeSection === s.id;
+                  return (
+                    <li key={s.id}>
+                      <button
+                        onClick={() => setActiveSection(s.id)}
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                          isActive ? 'bg-[#0B1F4D] text-white font-semibold shadow-sm' : 'text-gray-600 hover:bg-gray-50'
+                        }`}
+                      >
+                        <Icon size={15} className={isActive ? 'text-[#D4AF37]' : 'text-gray-400'} />
+                        <span className="flex-1 text-right">{s.label}</span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+
+              {/* Divider */}
+              <div className="border-t border-gray-100 mb-3" />
+
+              {/* Store group */}
+              <p className="text-[10px] font-black text-gray-400 uppercase tracking-wider px-3 pb-2">
+                إعدادات المتجر المشتركة
+              </p>
+              <ul className="space-y-0.5">
+                {STORE_SECTIONS.map(s => {
+                  const Icon = s.icon;
+                  const isActive = activeSection === s.id;
+                  return (
+                    <li key={s.id}>
+                      <button
+                        onClick={() => setActiveSection(s.id)}
+                        className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                          isActive ? 'bg-blue-600 text-white font-semibold shadow-sm' : 'text-gray-600 hover:bg-gray-50'
+                        }`}
+                      >
+                        <Icon size={15} className={isActive ? 'text-white' : 'text-gray-400'} />
+                        <span className="flex-1 text-right">{s.label}</span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           </div>
 
-          {/* Content Panel */}
-          <div className="lg:col-span-3 bg-white rounded-2xl shadow-sm p-6 min-h-[500px]">
+          {/* ── Content Panel ── */}
+          <div className="lg:col-span-3">
 
-            {activeSection === 'profile'   && <ProfileSection />}
-            {activeSection === 'security'  && <SecuritySection />}
-            {activeSection === 'countries' && <CountriesSection />}
-            {activeSection === 'payment'   && <PaymentMethodsSection />}
-            {activeSection === 'categories'&& <CategoriesSection />}
+            {/* Context banner */}
+            {isPersonal ? (
+              <div className="mb-4 px-4 py-3 bg-[#0B1F4D]/5 border border-[#0B1F4D]/10 rounded-2xl flex items-center gap-3">
+                <div className="w-8 h-8 bg-[#0B1F4D] rounded-xl flex items-center justify-center flex-shrink-0">
+                  <User size={14} className="text-[#D4AF37]" />
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-[#0B1F4D]">
+                    إعداداتك الشخصية — مخصصة لك فقط
+                  </p>
+                  <p className="text-[11px] text-[#0B1F4D]/60 mt-0.5">
+                    التغييرات هنا تؤثر على حسابك أنت فقط، ولا تؤثر على بقية المشرفين
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="mb-4 px-4 py-3 bg-blue-50 border border-blue-100 rounded-2xl flex items-center gap-3">
+                <div className="w-8 h-8 bg-blue-600 rounded-xl flex items-center justify-center flex-shrink-0">
+                  <Store size={14} className="text-white" />
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-blue-800">
+                    إعدادات المتجر المشتركة
+                  </p>
+                  <p className="text-[11px] text-blue-600 mt-0.5">
+                    هذه الإعدادات موحدة لجميع المشرفين وتؤثر على المتجر بالكامل
+                  </p>
+                </div>
+              </div>
+            )}
 
-            {activeSection === 'store' && <StoreSection />}
-            {activeSection === 'seo' && <SeoSection />}
-            {activeSection === 'notifications' && <NotificationsSection />}
-
+            <div className="bg-white rounded-2xl shadow-sm p-6 min-h-[500px]">
+              {activeSection === 'profile'      && <ProfileSection />}
+              {activeSection === 'security'     && <SecuritySection />}
+              {activeSection === 'countries'    && <CountriesSection />}
+              {activeSection === 'payment'      && <PaymentMethodsSection />}
+              {activeSection === 'categories'   && <CategoriesSection />}
+              {activeSection === 'store'        && <StoreSection />}
+              {activeSection === 'seo'          && <SeoSection />}
+              {activeSection === 'notifications'&& <NotificationsSection />}
+            </div>
           </div>
+
         </div>
       </div>
     </Layout>
