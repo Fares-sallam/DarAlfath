@@ -275,6 +275,8 @@ export interface StoreSettingsInput {
   seo_title?: string;
   seo_description?: string;
   seo_keywords?: string;
+  default_shipping_cost?: number;
+  free_shipping_threshold?: number;
   notifications?: {
     emailNewOrder?: boolean;
     smsNewOrder?: boolean;
@@ -299,6 +301,8 @@ const DEFAULT_STORE_SETTINGS: StoreSettings = {
   seo_title: 'دار الفتح — أفضل الكتب الورقية والرقمية',
   seo_description: 'اكتشف مجموعة واسعة من الكتب الورقية والرقمية بأفضل الأسعار مع توصيل سريع.',
   seo_keywords: 'كتب، مكتبة، روايات، تنمية بشرية، كتب رقمية، دار الفتح',
+  default_shipping_cost: 45,
+  free_shipping_threshold: 499,
   notifications: {
     emailNewOrder: true,
     smsNewOrder: true,

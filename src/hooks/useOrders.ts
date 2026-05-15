@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
@@ -89,6 +90,28 @@ function buildDateToIso(date?: string) {
 /* ── Fetch orders (country-aware) ── */
 export function useOrders(filters: OrderFilters = {}) {
   const { selectedCountry } = useCountry();
+  const qc = useQueryClient();
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('dashboard-orders-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, () => {
+        void qc.invalidateQueries({ queryKey: ['orders'] });
+        void qc.invalidateQueries({ queryKey: ['dashboard'] });
+        void qc.invalidateQueries({ queryKey: ['analytics'] });
+        void qc.invalidateQueries({ queryKey: ['shipping-orders'] });
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, () => {
+        void qc.invalidateQueries({ queryKey: ['orders'] });
+        void qc.invalidateQueries({ queryKey: ['dashboard'] });
+        void qc.invalidateQueries({ queryKey: ['analytics'] });
+      })
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [qc]);
 
   return useQuery({
     queryKey: ['orders', selectedCountry?.id ?? 'all', filters],
@@ -152,6 +175,34 @@ export function useOrders(filters: OrderFilters = {}) {
 /* ── Fetch single order with items (country-aware) ── */
 export function useOrderDetail(orderId: string | null) {
   const { selectedCountry } = useCountry();
+  const qc = useQueryClient();
+
+  useEffect(() => {
+    if (!orderId) return undefined;
+
+    const channel = supabase
+      .channel(`dashboard-order-detail-${orderId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders', filter: `id=eq.${orderId}` },
+        () => {
+          void qc.invalidateQueries({ queryKey: ['order-detail', orderId] });
+          void qc.invalidateQueries({ queryKey: ['orders'] });
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'order_items', filter: `order_id=eq.${orderId}` },
+        () => {
+          void qc.invalidateQueries({ queryKey: ['order-detail', orderId] });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [orderId, qc]);
 
   return useQuery({
     queryKey: ['order-detail', orderId, selectedCountry?.id ?? 'all'],
